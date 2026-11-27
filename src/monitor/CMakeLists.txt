@@ -21,6 +21,15 @@ set(CPP_SOURCES "${SRC_DIR}/MonitorFileSink.cpp")
 # ------------------------------------------------------------------------------
 # Library
 # ------------------------------------------------------------------------------
+# Monitor.hpp, compiled into the program, allocates the MonitorFileSink that
+# libmonitor constructs and writes through, so the sink's layout crosses the
+# library boundary: raise MONITOR_ABI_SOVERSION whenever it changes, or an
+# exported signature does, so the loader refuses a program built against the
+# previous layout instead of binding it to this one. 2: the file sink's path
+# and record counts.
+# ------------------------------------------------------------------------------
+
+set(MONITOR_ABI_SOVERSION 2)
 
 vernier_add_library(
   NAME
@@ -33,6 +42,8 @@ vernier_add_library(
   ${CPP_SOURCES}
   REQUIRES
   POSIX
+  ABI_VERSION
+  ${MONITOR_ABI_SOVERSION}
 )
 
 target_link_libraries(

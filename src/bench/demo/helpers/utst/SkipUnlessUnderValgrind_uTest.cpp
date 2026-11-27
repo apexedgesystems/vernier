@@ -6,7 +6,9 @@
  * Notes:
  *  - The helper decides from the process it runs in, so the tests run this
  *    binary as a child on a probe case that uses the helper, once plainly and
- *    once under valgrind, and read what GoogleTest printed for the probe.
+ *    once under valgrind, and read what GoogleTest printed for the probe. The
+ *    probe is in SkipUnlessUnderValgrind_Probe.cpp, compiled in and not
+ *    registered with CTest.
  *  - The valgrind run skips in a build with the address or the thread
  *    sanitizer (which valgrind cannot check), where valgrind is not installed,
  *    and where valgrind gives up reading this binary before the program runs
@@ -17,13 +19,13 @@
 
 #include "src/bench/demo/helpers/SkipUnlessUnderValgrind.hpp"
 
+#include "src/bench/demo/helpers/utst/SkipUnlessProbe.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstddef>
-#include <cstdio>
 #include <cstdlib>
 
 #include <array>
@@ -36,7 +38,7 @@
 #include <gtest/gtest.h>
 
 using vernier::bench::demo::BUILT_WITH_ASAN_OR_TSAN;
-using vernier::bench::demo::reasonToSkipUnlessUnderValgrind;
+using vernier::bench::demo::PROBE_RAN;
 using vernier::bench::demo::SANITIZER_UNDER_VALGRIND_REASON;
 using vernier::bench::demo::SKIP_UNLESS_UNDER_VALGRIND_REASON;
 using vernier::bench::profiler_env::isOnPath;
@@ -45,9 +47,6 @@ using vernier::bench::profiler_env::isOnPath;
 
 /// The probe's name, as the child runs select it and GoogleTest prints it.
 constexpr const char* PROBE_TEST = "SkipUnlessUnderValgrindProbe.RunsOnlyUnderValgrind";
-
-/// What the probe prints once the helper has let it run.
-constexpr const char* PROBE_RAN = "probe: the helper let this case run";
 
 /* ----------------------------- Child Runs ----------------------------- */
 
@@ -151,27 +150,17 @@ std::string debugInfoGiveUp(const std::string& text) {
 
 } // namespace
 
-/* ----------------------------- Probe ----------------------------- */
-
-/** @test The probe the child runs select: skips unless under valgrind, then reports that it ran */
-TEST(SkipUnlessUnderValgrindProbe, RunsOnlyUnderValgrind) {
-  DEMO_SKIP_UNLESS_UNDER_VALGRIND();
-  EXPECT_TRUE(reasonToSkipUnlessUnderValgrind().empty());
-  std::puts(PROBE_RAN);
-}
-
 /* ----------------------------- API Tests ----------------------------- */
 
-/** @test The reason tells the reader both ways to run the case */
-TEST(SkipUnlessUnderValgrindTest, ReasonSaysHowToRunTheCase) {
-  const std::string reason = SKIP_UNLESS_UNDER_VALGRIND_REASON;
-
-  EXPECT_NE(reason.find("valgrind --tool=memcheck"), std::string::npos) << reason;
-  EXPECT_NE(reason.find("bench run --profile memcheck"), std::string::npos) << reason;
-}
-
-/** @test In a plain run the probe reports SKIPPED with the reason, and does not run */
+/**
+ * @test In a plain run the probe reports SKIPPED with the reason, which tells
+ * the reader both ways to run the case, and does not run
+ */
 TEST(SkipUnlessUnderValgrindTest, PlainRunSkipsTheProbe) {
+  const std::string REASON = SKIP_UNLESS_UNDER_VALGRIND_REASON;
+  EXPECT_NE(REASON.find("valgrind --tool=memcheck"), std::string::npos) << REASON;
+  EXPECT_NE(REASON.find("bench run --profile memcheck"), std::string::npos) << REASON;
+
   const ScratchDir SCRATCH;
   ASSERT_FALSE(SCRATCH.path().empty()) << "could not create a scratch directory";
 

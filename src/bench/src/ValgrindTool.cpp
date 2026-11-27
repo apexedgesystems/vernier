@@ -101,7 +101,7 @@ OutputFile outputFile(const std::string& backend) {
 
 std::vector<std::string> wrapArguments(const std::string& backend, const ValgrindMode& mode,
                                        const std::string& dir) {
-  std::vector<std::string> args{"--tool=" + mode.tool};
+  std::vector<std::string> args{"--tool=" + mode.tool, FAIR_SCHEDULER};
   args.insert(args.end(), mode.options.begin(), mode.options.end());
   const OutputFile OUT = outputFile(backend);
   args.push_back(OUT.option + "=" + dir + "/" + OUT.name);
@@ -111,10 +111,9 @@ std::vector<std::string> wrapArguments(const std::string& backend, const Valgrin
 std::string wrapRemedy(const std::string& backend, const ValgrindMode& mode,
                        const std::string& profileArgs,
                        const std::vector<std::string>& extraOptions) {
-  std::vector<std::string> args{"--tool=" + mode.tool};
-  args.insert(args.end(), extraOptions.begin(), extraOptions.end());
-  const std::vector<std::string> ROUTE = wrapArguments(backend, mode, ".");
-  args.insert(args.end(), ROUTE.begin() + 1, ROUTE.end());
+  std::vector<std::string> args = wrapArguments(backend, mode, ".");
+  // After --tool and FAIR_SCHEDULER, before the mode's options.
+  args.insert(args.begin() + 2, extraOptions.begin(), extraOptions.end());
   const std::string REQUEST = requestText(backend, profileArgs);
   return "Wrap it: valgrind " + join(args, " ") + " <this-binary> " + REQUEST +
          " [...]; or run it with bench run " + REQUEST + ", which wraps it.";

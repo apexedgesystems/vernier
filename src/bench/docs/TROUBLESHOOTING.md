@@ -568,7 +568,7 @@ before any profiler or `--repeats` run.
 
 **Built-in watchdog:**
 
-Under `--profile X`, vernier arms a SIGALRM watchdog around each measured loop
+Under `--profile X`, vernier arms a watchdog around each measured loop
 (the repeats of `measured()` and `throughputLoop()`). A loop that runs longer
 than 300 s stops the run with exit status 2 and a diagnostic naming the test and
 the profile tool. `--profile-test-timeout <seconds>` changes the limit, and
@@ -577,7 +577,54 @@ whole number of seconds from 0 (a negative number, `30s`, text) stops the run
 before any test with exit status 2 and the accepted range. It is not armed
 without `--profile`, and it does not cover warmup, `--target-time`
 calibration, the profiler's own start and stop, `contentionRun()` or GPU
-measurements; an external `timeout` bounds those.
+measurements; an external `timeout` bounds those. The watchdog uses no
+`alarm()`, no SIGALRM and no interval timer, so a benchmark's own `alarm()`
+and SIGALRM handler, and gperftools sampling on the real-time timer
+(`CPUPROFILE_REALTIME`), work under `--profile`.
+
+A benchmark that has started no thread of its own is measured
+single-threaded: on Linux with glibc 2.34 or later the watchdog is a POSIX
+timer that signals the measuring thread with a real-time signal it takes
+while that signal's disposition is the default (the first free one from
+`SIGRTMIN` + 4); the signal stays the watchdog's for the life of the
+process, so after the first arming, sending it to the process, which its
+default action would end, does nothing. It starts no thread, so the C
+library and libstdc++ keep their single-threaded paths, as with
+`--profile-test-timeout 0`. One gap the watchdog's thread does not have: a
+single-threaded benchmark that blocks the watchdog's signal, or takes its
+disposition, inside its measured loop is not ended.
+
+A benchmark that has started threads of its own gains one more, the
+watchdog's: started by the first measured loop under `--profile`, parked
+between loops, kept until the process ends. Its allocator and atomic
+operations are on their multi-threaded paths with or without it: under
+`heaptrack`, `bpftrace` and `offcpu`, which start a thread, in a CUDA
+benchmark, whose runtime starts its own (`nsight`, `ncu`,
+`compute-sanitizer`), and in `contentionRun()`, whose workers are threads.
+`memcheck`'s leak check reports one block possibly lost, allocated as the
+watchdog's thread started. Under valgrind, the wrap `bench run` writes asks
+for valgrind's fair scheduler (`--fair-sched=try`), and so does the wrap a
+benchmark prints when nothing wraps it; a wrap written by hand should too.
+valgrind runs one thread at a time, and its default scheduler lets a thread
+that computes keep the others from running, the watchdog's among them, so a
+hung loop can be ended late or not at all; the fair scheduler takes the
+threads in turn. On a Jetson AGX Thor, a hung loop beside a thread of its own,
+so on the watchdog's thread, was ended 1.05 to 1.29 s after it started, with a
+1 s timeout, in all 36 runs under callgrind and memcheck with the fair
+scheduler, and late or not at all in all 36 with the default one. Two
+four-thread contention cases there counted 0.9 to 2.5 billion instructions a
+run under callgrind with the default scheduler, varying from run to run, and
+4.9 to 5.1 million with the fair one; a single-threaded benchmark's counts and
+time were the same with either. These are those runs, not limits. `try` keeps
+the default where valgrind has no fair scheduler for the platform, where `yes`
+would refuse to start. valgrind reads `VALGRIND_OPTS` and its `.valgrindrc`
+files before the command line, so a `--fair-sched` given there does not change
+the wrap's. A benchmark that starts no thread of its own gets the thread too
+where its measuring thread blocks the timer's signal when the loop starts, and
+on another C library or an older glibc; it then leaves the C library's
+single-threaded paths (glibc's `malloc` and `free` take their locks).
+`--profile-test-timeout 0` arms nothing: no timer, no signal handler, no
+thread.
 
 **Debug:**
 
@@ -798,7 +845,7 @@ When its first case creates the profiler, it prints:
 
 ```
 [FAIL] Profiler 'massif': missing: massif collects only when valgrind's massif runs the process, and valgrind does not run this one
-   Wrap it: valgrind --tool=massif --massif-out-file=./massif.out <this-binary> --profile massif [...]; or run it with bench run --profile massif, which wraps it.
+   Wrap it: valgrind --tool=massif --fair-sched=try --massif-out-file=./massif.out <this-binary> --profile massif [...]; or run it with bench run --profile massif, which wraps it.
    Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
 ```
 
@@ -1293,7 +1340,7 @@ pip install pandas matplotlib seaborn scipy
 **Symptoms:**
 
 ```
-Error: invalid arguments: input file not found: MyComponent.Test.perf/perf.data
+Error: invalid arguments: input not found: MyComponent.Test.perf/perf.data (a perf.data file, or the directory perf record --threads writes)
 ```
 
 or, when `perf.data` holds no samples,
@@ -1313,9 +1360,9 @@ Error: tool not found: FlameGraph scripts not found; set $FLAMEGRAPH_DIR or clon
 **1. Record call stacks, for long enough**: `--profile perf` on its own runs
 `perf stat` and writes only `stat.txt`. A flamegraph needs the `perf.data` that
 record mode writes, with samples in it. The measured phase starts once perf is
-sampling, but a phase of a few milliseconds holds few samples (with none,
-`perf report` says the file has no samples); `--target-time` lengthens the
-phase:
+sampling, but a phase of a few milliseconds holds few samples (with none, a
+`[perf] caveat:` line on stderr names the file, and `perf report` says it has
+no samples); `--target-time` lengthens the phase:
 
 ```bash
 ./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \

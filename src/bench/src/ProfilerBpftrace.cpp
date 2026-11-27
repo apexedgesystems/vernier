@@ -1685,6 +1685,10 @@ public:
     if (!enabled_) {
       return;
     }
+    // A window that ended through neither afterMeasure() nor abortMeasure()
+    // (hooks attached without the abort hook) left its tracers: they are no
+    // part of this capture.
+    discardRunners("the previous measured window did not end through the profiler's hooks");
     const pid_t TARGET = ::getpid();
     stopTid_ = bpftrace_tool::currentThreadId();
     const bpftrace_tool::ArmThread ARM;
@@ -1759,11 +1763,35 @@ public:
     runners_.clear();
   }
 
+  /**
+   * @brief The measured window ended by an exception: stop every tracer
+   * started for it, judge no capture and record nothing, so that none traces
+   * past the window or is judged with a later one.
+   */
+  void abortMeasure() { discardRunners("the measured window ended by an exception"); }
+
   std::string artifactDir() const { return artifactDir_; }
 
   [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
 
 private:
+  /**
+   * @brief Let go of the tracers still held, @p why they are no capture, and
+   * say so once. Each runner's destructor stops its tracer through the route,
+   * printing a stop that went wrong; none of them is judged into this
+   * capture's outcome or recorded, and their files stay.
+   */
+  void discardRunners(const char* why) {
+    if (runners_.empty()) {
+      return;
+    }
+    runners_.clear();
+    std::fprintf(stderr,
+                 "[bpftrace] %s: its tracers were stopped, and their output in %s is no "
+                 "capture\n",
+                 why, artifactDir_.c_str());
+  }
+
   /**
    * @brief Keep the capture's gravest outcome, the first of its kind: a
    * failure over a caveat, a caveat over READY. Every failure is also the
@@ -1882,6 +1910,19 @@ void BpftraceProfiler::afterMeasure(const Stats& /*s*/) {
 #ifdef __linux__
   if (impl_) {
     impl_->afterMeasure();
+  }
+#endif
+}
+
+void BpftraceProfiler::abortMeasure() noexcept {
+#ifdef __linux__
+  if (impl_) {
+    try {
+      impl_->abortMeasure();
+    } catch (...) {
+      // Called while an exception is on its way to the caller: nothing here
+      // may replace it.
+    }
   }
 #endif
 }

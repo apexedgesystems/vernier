@@ -222,8 +222,8 @@ TEST(Helgrind, LockedTotalReportsNothing) {
   // choice; without the marking the gate is reported, and the locked control
   // has nothing to show
   if (!vernier::bench::helgrind::requestsBuiltIn()) {
-    GTEST_SKIP() << "this libbench was built without valgrind's helgrind.h, or with NVALGRIND, "
-                    "so contentionRun's start gate is not marked for helgrind and is reported";
+    GTEST_SKIP() << "this libbench was built with NVALGRIND, so contentionRun's start gate is "
+                    "not marked for helgrind and is reported";
   }
   const std::string DEMO = demoPath();
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;

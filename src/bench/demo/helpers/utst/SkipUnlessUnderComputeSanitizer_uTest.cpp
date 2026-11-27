@@ -7,8 +7,10 @@
  *  - The helper decides from the process it runs in, so the tests run this
  *    binary as a child on a probe case that uses the helper, once plainly and
  *    once under compute-sanitizer, and read what GoogleTest printed for the
- *    probe. This binary calls no CUDA, so the tool is told not to require it
- *    (`--require-cuda-init no`); what it exports to the process is the same.
+ *    probe. The probe is in SkipUnlessUnderComputeSanitizer_Probe.cpp,
+ *    compiled in and not registered with CTest. This binary calls no CUDA,
+ *    so the tool is told not to require it (`--require-cuda-init no`); what
+ *    it exports to the process is the same.
  *  - The tool run skips in a build with the address sanitizer, whose runtime
  *    aborts the program before its tests start once the tool's libraries are
  *    injected ("AddressSanitizer: alloc-dealloc-mismatch"), and where
@@ -23,12 +25,12 @@
 
 #include "src/bench/demo/cpu/utst/12_MemcheckProfiler_Check.hpp"
 #include "src/bench/demo/gpu/utst/04_ComputeSanitizerProfiler_Check.hpp"
+#include "src/bench/demo/helpers/utst/SkipUnlessProbe.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <unistd.h>
 
 #include <cstddef>
-#include <cstdio>
 #include <cstdlib>
 
 #include <array>
@@ -41,7 +43,7 @@
 namespace vg = vernier::bench::demo::memcheck_check;
 namespace fs = std::filesystem;
 
-using vernier::bench::demo::reasonToSkipUnlessUnderComputeSanitizer;
+using vernier::bench::demo::PROBE_RAN;
 using vernier::bench::demo::SKIP_UNLESS_UNDER_COMPUTE_SANITIZER_REASON;
 using vernier::bench::demo::sanitizer_check::BUILT_WITH_ASAN;
 using vernier::bench::profiler_env::isOnPath;
@@ -52,9 +54,6 @@ namespace {
 
 /// The probe's name, as the child runs select it and GoogleTest prints it.
 constexpr const char* PROBE_TEST = "SkipUnlessUnderComputeSanitizerProbe.RunsOnlyUnderTheTool";
-
-/// What the probe prints once the helper has let it run.
-constexpr const char* PROBE_RAN = "probe: the helper let this case run";
 
 /// Path of this binary, which the child runs execute.
 std::string selfPath() {
@@ -96,27 +95,17 @@ std::string reasonTheToolStartsNoProgram(const fs::path& dir) {
 
 } // namespace
 
-/* ----------------------------- Probe ----------------------------- */
-
-/** @test The probe the child runs select: skips unless under the tool, then reports that it ran */
-TEST(SkipUnlessUnderComputeSanitizerProbe, RunsOnlyUnderTheTool) {
-  DEMO_SKIP_UNLESS_UNDER_COMPUTE_SANITIZER();
-  EXPECT_TRUE(reasonToSkipUnlessUnderComputeSanitizer().empty());
-  std::puts(PROBE_RAN);
-}
-
 /* ----------------------------- API Tests ----------------------------- */
 
-/** @test The reason tells the reader both ways to run the case */
-TEST(SkipUnlessUnderComputeSanitizerTest, ReasonSaysHowToRunTheCase) {
-  const std::string reason = SKIP_UNLESS_UNDER_COMPUTE_SANITIZER_REASON;
-
-  EXPECT_NE(reason.find("compute-sanitizer --tool=memcheck"), std::string::npos) << reason;
-  EXPECT_NE(reason.find("bench run --profile compute-sanitizer"), std::string::npos) << reason;
-}
-
-/** @test In a plain run the probe reports SKIPPED with the reason, and does not run */
+/**
+ * @test In a plain run the probe reports SKIPPED with the reason, which tells
+ * the reader both ways to run the case, and does not run
+ */
 TEST(SkipUnlessUnderComputeSanitizerTest, PlainRunSkipsTheProbe) {
+  const std::string REASON = SKIP_UNLESS_UNDER_COMPUTE_SANITIZER_REASON;
+  EXPECT_NE(REASON.find("compute-sanitizer --tool=memcheck"), std::string::npos) << REASON;
+  EXPECT_NE(REASON.find("bench run --profile compute-sanitizer"), std::string::npos) << REASON;
+
   const fs::path DIR = scratchDir();
   ASSERT_FALSE(DIR.empty()) << "could not create a scratch directory";
 

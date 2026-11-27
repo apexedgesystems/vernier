@@ -624,6 +624,27 @@ void OffCpuProfiler::beforeMeasure() {
 
 void OffCpuProfiler::afterMeasure(const Stats& /*s*/) { stopBpftrace(); }
 
+void OffCpuProfiler::abortMeasure() noexcept {
+  if (!capture_) {
+    return;
+  }
+  try {
+    // Stopped as afterMeasure() stops it, with a stop that went wrong printed,
+    // but nothing read or published: the outcome stays unset, and the case's
+    // destructor finds no capture to publish.
+    const std::unique_ptr<Capture> CAPTURE = std::move(capture_);
+    const HelperStopResult STOPPED = CAPTURE->tracer.stop();
+    (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_);
+    std::fprintf(stderr,
+                 "[offcpu] the measured window ended by an exception: the tracer was stopped, "
+                 "and its capture in %s is not published\n",
+                 artifactDir_.c_str());
+  } catch (...) {
+    // Called while an exception is on its way to the caller: nothing here
+    // may replace it.
+  }
+}
+
 void OffCpuProfiler::spawnBpftrace() {
   if (capture_) {
     stopBpftrace();

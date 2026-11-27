@@ -8,6 +8,8 @@
 #   run          run until signalled (at most 30 s)
 #   ignore-int   like run, but ignore SIGINT
 #   fail TEXT    print TEXT on stderr, exit 3
+#   signalled    end by SIGUSR1, which it sends itself (a signal that leaves
+#                no core dump)
 #   both         print one line on stdout and one on stderr
 #   parent       run one child and wait for it (a monitor with one child)
 #   parents      run two children and wait for them (an ambiguous monitor)
@@ -51,6 +53,9 @@ ignore-int)
 fail)
   echo "${2:-fake helper failed}" >&2
   exit 3
+  ;;
+signalled)
+  kill -USR1 $$
   ;;
 both)
   echo "to stdout"

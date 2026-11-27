@@ -9,13 +9,16 @@
  *    exists (PerfUtils.hpp, HelgrindRequests.cpp). The tests run this
  *    binary under helgrind as a child, on two probe cases that start four
  *    threads through contentionRun: workers that add to a counter under a
- *    mutex, and workers that add to it without one.
+ *    mutex, and workers that add to it without one. The racy probe is in
+ *    StartGateHelgrind_Probe.cpp, compiled in and not registered with CTest,
+ *    since outside valgrind it only skips.
  *  - The helgrind runs skip in a build configured with the address or the
  *    thread sanitizer, where valgrind is not installed, and where valgrind
  *    stops reading this binary's debug information before the program runs,
  *    quoting valgrind; the locked run also skips where libbench says it does
- *    not mark the gate (built without helgrind.h, or with NVALGRIND). Any
- *    other way of not reaching a probe fails, with what the run printed.
+ *    not mark the gate (built with NVALGRIND), which only such a build may
+ *    say. Any other way of not reaching a probe fails, with what the run
+ *    printed.
  *  - Tests are independent of execution order.
  */
 
@@ -25,6 +28,7 @@
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/utst/StartGateProbe.hpp"
 
 #include <sys/wait.h>
 #include <unistd.h>
@@ -47,21 +51,16 @@
 #include <gtest/gtest.h>
 
 using vernier::bench::PerfCase;
-using vernier::bench::PerfConfig;
 using vernier::bench::profiler_env::isOnPath;
-using vernier::bench::profiler_env::isRunningUnderValgrind;
+using vernier::bench::test::LOCKED_PROBE;
+using vernier::bench::test::PROBE_CYCLES;
+using vernier::bench::test::PROBE_THREADS;
+using vernier::bench::test::probeConfig;
+using vernier::bench::test::RACY_PROBE;
 
 /* ----------------------------- Constants ----------------------------- */
 
 namespace {
-
-/// Threads each probe starts, and calls each thread makes.
-constexpr int PROBE_THREADS = 4;
-constexpr int PROBE_CYCLES = 2;
-
-/// The probe cases, as the helgrind runs select them.
-constexpr const char* LOCKED_PROBE = "StartGateProbe.LockedWorkers";
-constexpr const char* RACY_PROBE = "StartGateProbe.RacyWorkers";
 
 /// What valgrind exits with when helgrind reported an error: not 1, which is
 /// also what a failed test exits with.
@@ -77,25 +76,7 @@ constexpr const char* SANITIZER = "";
 
 } // namespace
 
-/* ----------------------------- Probes ----------------------------- */
-
-namespace {
-
-/// The probes' harness settings: PROBE_THREADS threads of PROBE_CYCLES calls,
-/// one repeat.
-PerfConfig probeConfig() {
-  PerfConfig cfg;
-  cfg.threads = PROBE_THREADS;
-  cfg.cycles = PROBE_CYCLES;
-  cfg.repeats = 1;
-  return cfg;
-}
-
-/// Adds one to @p counter without a lock: the racy probe's race. The counter
-/// is eight bytes wide, which neither of the gate's flags is.
-[[gnu::noinline]] void addUnlocked(std::uint64_t& counter) { ++counter; }
-
-} // namespace
+/* ----------------------------- Probe ----------------------------- */
 
 /** @test The locked probe: workers add under a mutex, and every call is counted */
 TEST(StartGateProbe, LockedWorkers) {
@@ -111,18 +92,6 @@ TEST(StartGateProbe, LockedWorkers) {
       "locked");
 
   EXPECT_EQ(counter, static_cast<std::uint64_t>(PROBE_THREADS * PROBE_CYCLES));
-}
-
-/** @test The racy probe: workers add without a lock; runs only under valgrind */
-TEST(StartGateProbe, RacyWorkers) {
-  if (!isRunningUnderValgrind()) {
-    GTEST_SKIP() << "this probe races on purpose, for helgrind to find, so it runs only under "
-                    "valgrind";
-  }
-  PerfCase perf{RACY_PROBE, probeConfig()};
-  std::uint64_t counter = 0;
-
-  perf.contentionRun([&] { addUnlocked(counter); }, "racy");
 }
 
 /* ----------------------------- Child Runs ----------------------------- */
@@ -302,6 +271,19 @@ bool reportsRaceOfSize(const std::string& log, std::size_t size) {
 
 /* ----------------------------- API Tests ----------------------------- */
 
+/**
+ * @test libbench marks the gate in every build, from the helgrind.h it
+ * carries, whatever its build machine has installed: only NVALGRIND, the way
+ * to compile the requests out, leaves it unmarked
+ */
+TEST(StartGateHelgrindTest, MarkedUnlessBuiltWithNvalgrind) {
+#if defined(NVALGRIND)
+  EXPECT_FALSE(vernier::bench::helgrind::requestsBuiltIn());
+#else
+  EXPECT_TRUE(vernier::bench::helgrind::requestsBuiltIn());
+#endif
+}
+
 /** @test Under helgrind the locked probe reports no error: the gate's flags are not reported */
 TEST(StartGateHelgrindTest, GateReportsNothing) {
   const std::string CANNOT_RUN = reasonHelgrindCannotRun();
@@ -310,8 +292,8 @@ TEST(StartGateHelgrindTest, GateReportsNothing) {
   }
   // Whether the gate marks its flags is libbench's build-time choice, so ask it
   if (!vernier::bench::helgrind::requestsBuiltIn()) {
-    GTEST_SKIP() << "this libbench was built without valgrind's helgrind.h, or with NVALGRIND, "
-                    "so StartGate does not mark its flags for helgrind";
+    GTEST_SKIP() << "this libbench was built with NVALGRIND, so StartGate does not mark its "
+                    "flags for helgrind";
   }
   const ScratchDir SCRATCH;
   ASSERT_FALSE(SCRATCH.path().empty()) << "could not create a scratch directory";

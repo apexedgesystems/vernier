@@ -34,7 +34,10 @@
  * tracer with SIGINT, on which bpftrace prints the lines it still had
  * queued, where a late disarm line counts too, and then its maps. Each
  * capture creates its output afresh; a stop line before the arm line, or
- * measured repeats that end on another thread, fail the capture. The
+ * measured repeats that end on another thread, fail the capture. When the
+ * measured window ends by an exception, abortMeasure() stops the tracer
+ * through the same route and neither reads nor publishes its capture: it
+ * says so in one line, records nothing, and keeps the files. The
  * backend's own waits run under the name vernier-wait. The script records no
  * thread that carries one of the three names, which are reserved: a test's
  * own thread given one of them disturbs the capture.
@@ -158,6 +161,9 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+
+  /** @brief The measured window ended by an exception: stop the tracer, publish nothing. */
+  void abortMeasure() noexcept override;
 
   /**
    * @brief How the last capture ended: Ok for a verified capture (with

@@ -84,6 +84,17 @@ public:
     return TARGET;
   }
 
+  /**
+   * @brief Link the real program @p target (an absolute path) into the directory as @p name, so
+   * a check that runs it by name finds it there; returns the link's path.
+   */
+  std::string link(const std::string& target, const std::string& name) const {
+    const std::string LINK = dir_ + "/" + name;
+    std::error_code ec;
+    std::filesystem::create_symlink(target, LINK, ec);
+    return LINK;
+  }
+
   /** @brief Create a directory named @p name (a directory named like a tool). */
   std::string makeDirectory(const std::string& name) const {
     const std::string TARGET = dir_ + "/" + name;

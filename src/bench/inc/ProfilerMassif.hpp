@@ -15,7 +15,7 @@
  *   bench run ./MyTest --profile massif --cycles 10 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
- *   valgrind --tool=massif --massif-out-file=run.massif.out \
+ *   valgrind --tool=massif --fair-sched=try --massif-out-file=run.massif.out \
  *       ./MyTest --profile massif --cycles 10 --gtest_filter='Foo.Bar'
  *
  *   ms_print run.massif.out | head -40

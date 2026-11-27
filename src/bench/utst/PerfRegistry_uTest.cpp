@@ -3,7 +3,7 @@
  * @brief Unit tests for vernier::bench::PerfRegistry.
  *
  * Tests singleton access, publication and takes, the names a test's rows are
- * given, and profile metadata updates.
+ * given, profile metadata updates, and the stable verdict a row carries.
  *
  * Notes:
  *  - The registry is process-wide: every test that publishes first takes
@@ -12,11 +12,14 @@
 
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
+#include "src/bench/inc/PerfHarness.hpp"
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstddef>
 
+#include <chrono>
 #include <future>
 #include <set>
 #include <string>
@@ -24,9 +27,12 @@
 #include <utility>
 #include <vector>
 
+using vernier::bench::buildPerfRow;
 using vernier::bench::globalPerfConfig;
+using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
+using vernier::bench::PerfResult;
 using vernier::bench::PerfRow;
 using vernier::bench::setGlobalPerfConfig;
 using vernier::bench::Stats;
@@ -425,6 +431,65 @@ TEST(PerfRowTest, DefaultConstructionEmptyOptionals) {
   EXPECT_FALSE(ROW.kernelTimeUs.has_value());
   EXPECT_FALSE(ROW.deviceId.has_value());
   EXPECT_FALSE(ROW.umPageFaults.has_value());
+}
+
+/** @test Takes the CV threshold from the payload tier and quick mode; stable only below it */
+TEST(PerfRowTest, StableVerdictFollowsTheTiers) {
+  struct Tier {
+    int msgBytes;
+    bool quick;
+    double threshold;
+  };
+  // PerfValidation.hpp's table: under 64 B, under 256 B, under 1 KiB, and
+  // above; quick mode relaxes each by half.
+  const std::vector<Tier> TIERS = {
+      {32, false, 0.20}, {64, false, 0.10}, {256, false, 0.05}, {1024, false, 0.03},
+      {32, true, 0.30},  {64, true, 0.15},  {256, true, 0.075}, {1024, true, 0.045},
+  };
+  for (const Tier& tier : TIERS) {
+    SCOPED_TRACE(std::to_string(tier.msgBytes) + " B" + (tier.quick ? ", quick mode" : ""));
+    PerfConfig cfg;
+    cfg.msgBytes = tier.msgBytes;
+    cfg.quickMode = tier.quick;
+    Stats stats{};
+    const PerfRow ROW = buildPerfRow("Tiers.Case", cfg, 1, 1, stats, 0.0);
+    EXPECT_DOUBLE_EQ(ROW.cvThreshold, tier.threshold);
+
+    // Strictly below the row's own threshold, not the table's literal: 0.05 *
+    // 1.5 is not the double nearest 0.075, so a CV of 0.075 would read stable.
+    stats.cv = std::nextafter(ROW.cvThreshold, 0.0);
+    EXPECT_TRUE(buildPerfRow("Tiers.Case", cfg, 1, 1, stats, 0.0).stable);
+    stats.cv = ROW.cvThreshold;
+    EXPECT_FALSE(buildPerfRow("Tiers.Case", cfg, 1, 1, stats, 0.0).stable);
+  }
+}
+
+/** @test Gives measured()'s result the stable verdict and threshold of the row it publishes */
+TEST(PerfRowTest, MeasuredResultHasItsRowsStableVerdict) {
+  PerfRegistry& registry = PerfRegistry::instance();
+  static_cast<void>(registry.takeAll());
+
+  PerfConfig cfg;
+  cfg.cycles = 1;
+  cfg.repeats = 10;
+  cfg.msgBytes = 1024; // the 3% tier
+  PerfCase perf{"Tiers.Measured", cfg};
+  // The repeats alternate between about 1 us and 50 us of spinning, a CV near
+  // 1: unstable in every tier, so a row that read stable would differ.
+  int call = 0;
+  const PerfResult RESULT = perf.measured([&] {
+    const auto SPIN = std::chrono::microseconds(call++ % 2 == 0 ? 1 : 50);
+    const auto UNTIL = std::chrono::steady_clock::now() + SPIN;
+    while (std::chrono::steady_clock::now() < UNTIL) {
+    }
+  });
+  const std::vector<PerfRow> ROWS = registry.takeAll();
+
+  ASSERT_EQ(ROWS.size(), 1U);
+  ASSERT_FALSE(RESULT.stable) << "CV " << RESULT.stats.cv;
+  EXPECT_EQ(ROWS[0].stable, RESULT.stable);
+  EXPECT_DOUBLE_EQ(ROWS[0].cvThreshold, RESULT.cvThreshold);
+  EXPECT_DOUBLE_EQ(ROWS[0].stats.cv, RESULT.stats.cv);
 }
 
 /** @test PerfRow GPU fields can be set. */
