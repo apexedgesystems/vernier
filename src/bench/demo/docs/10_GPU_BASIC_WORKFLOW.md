@@ -3,19 +3,6 @@
 **Reference rig:** [NVIDIA Jetson AGX Thor](../../docs/rigs/RIG_THOR_AGX.md)
 **Build:** Release
 **Example:** `saxpy` (see [Shared Examples](../README.md#shared-examples))
-**Captured:** 2026-09-23 (UTC). Written for the Vernier 1.0.4 release;
-captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`. The capture predates two later fixes, to how the SAXPY
-example releases what it allocated when a CUDA call fails and to the transfer
-test filling its device buffers before its warmup; neither touches a measured
-path. Steps 1 and 2, the reference CSV, the two `bench compare` outputs and
-every figure this page gives for this rig come from a session of 2026-11-16
-(UTC) on a later development tree at the same version, which has both fixes
-and whose collector records CUPTI's kernels in an untimed batch after the
-measured repeats: sixteen runs of Step 1's command with the clocks locked, the
-reference among the first five, and six with the clocks as found. The discrete
-GPU's figures come from three runs of Step 1's command on 2026-11-17 (UTC), on
-a later development tree at the same version.
 
 ## Overview
 
@@ -121,7 +108,7 @@ Each test asserts the effect it demonstrates, with a bound well inside what
 this rig measures: the copies of a round trip cost more than 2.5 times the
 kernel (6.52 to 6.82 over sixteen runs with the clocks locked), and the kernel
 alone beats the CPU loop by more than 3x (8.89x to 9.17x over the same runs).
-Both bounds were also checked on a discrete GPU, where the copies cost 294 to
+Both bounds also hold on a discrete GPU, where the copies cost 294 to
 305 times the kernel and the kernel alone beat the loop roughly 29x to 31x
 (Step 3). The speedup of the round trip with its copies is not asserted,
 because its direction depends on the clocks and on the memory system (below).
@@ -225,12 +212,12 @@ On this rig the CPU and the GPU share DRAM, so a "transfer" is a copy from one
 place in the same memory to another, at about 93 GB/s here
 (`memBandwidthGBs` in the CSV). **These transfer costs are specific to this
 rig.** A discrete GPU moves the same bytes over PCIe. Three runs of this demo
-on an NVIDIA RTX 5000 Ada laptop GPU (compute capability 8.9), with the clocks
-as found and the laptop busy with other work (a load average of 5 to 9), so
-that only its GPU-side figures are exact, read: the kernel about 6.6 us, the
-copies 1.91 to 2.00 ms, 294 to 305 times the kernel. The round trip took roughly
-9 to 10 times as long as the CPU loop there, while the kernel alone was roughly
-29x to 31x faster than it.
+on an NVIDIA RTX 5000 Ada laptop GPU (compute capability 8.9), with the GPU
+clocks left to the driver and other work running on the laptop (a load
+average of 5 to 9), so that only its GPU-side figures are exact, read: the
+kernel about 6.6 us, the copies 1.91 to 2.00 ms, 294 to 305 times the kernel.
+The round trip took roughly 9 to 10 times as long as the CPU loop there, while
+the kernel alone was roughly 29x to 31x faster than it.
 
 ## Step 4: The Kernel on Its Own
 
@@ -254,12 +241,12 @@ therefore land a few percent outside any range stated here.
 
 ## What Should Reproduce
 
-| Reading                            | On this rig                                                                                              | Elsewhere                                                                                          |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| kernel alone vs the CPU loop       | 9.10x, clocks locked (8.89x to 9.17x over sixteen runs)                                                  | the kernel wins by a wide margin: roughly 29x to 31x on the discrete GPU in Step 3                 |
-| round trip with copies vs the loop | 1.19x, clocks locked (1.13x to 1.21x over sixteen runs, wall 155.8 to 162.6 us); 0.19x to 0.96x as found | may go either way: on the discrete GPU in Step 3 it took roughly 9 to 10 times as long as the loop |
-| copies / kernel in one round trip  | 6.59 (6.52 to 6.82, clocks locked)                                                                       | the copies dominate: 294 to 305 over PCIe on the discrete GPU in Step 3                            |
-| absolute times                     | 187.3 / 156.7 / 20.6 us                                                                                  | will differ                                                                                        |
+| Reading                            | On this rig                                                                                                                  | Elsewhere                                                                                          |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| kernel alone vs the CPU loop       | 9.10x, clocks locked (8.89x to 9.17x over sixteen runs)                                                                      | the kernel wins by a wide margin: roughly 29x to 31x on the discrete GPU in Step 3                 |
+| round trip with copies vs the loop | 1.19x, clocks locked (1.13x to 1.21x over sixteen runs, wall 155.8 to 162.6 us); 0.19x to 0.96x, clocks left to the governor | may go either way: on the discrete GPU in Step 3 it took roughly 9 to 10 times as long as the loop |
+| copies / kernel in one round trip  | 6.59 (6.52 to 6.82, clocks locked)                                                                                           | the copies dominate: 294 to 305 over PCIe on the discrete GPU in Step 3                            |
+| absolute times                     | 187.3 / 156.7 / 20.6 us                                                                                                      | will differ                                                                                        |
 
 The demo fails if the copies stop costing 2.5 times the kernel or the kernel
 stops beating the loop by 3x.
@@ -267,8 +254,8 @@ stops beating the loop by 3x.
 ## If It Does Not Match
 
 - **The clocks were not locked.** The GPU readings move and the round trip
-  with copies can drop below the CPU loop. A run with the clocks as found,
-  compared against the reference:
+  with copies can drop below the CPU loop. A run with the clocks left to the
+  governor, compared against the reference:
 
   ```
   Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -320,7 +307,7 @@ stops beating the loop by 3x.
 bench compare src/bench/demo/reference/thor/10_gpu_basic_workflow.csv gpu_basic_workflow.csv
 ```
 
-A later run on the same rig, clocks locked:
+Another run of Step 1's command on this rig, clocks locked:
 
 ```
 Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -343,10 +330,10 @@ labels describe the difference between two runs and are not a significance
 test; the two CV columns are each run's own spread, not the spread between the
 runs.
 
-The reference CSV is one of five runs captured with the clocks locked: the one
-whose three medians sit closest to the median of each test across the five. It
-was captured from a copy of the development tree without its git metadata, so
-its `gitHash` column reads `unknown`.
+The reference CSV is one of five runs of Step 1's command with the clocks
+locked: the one whose three medians sit closest to the median of each test
+across the five. Its `gitHash` column reads `unknown`, which the harness
+records when `git describe` fails in the directory the run starts in.
 
 ## See Also
 
