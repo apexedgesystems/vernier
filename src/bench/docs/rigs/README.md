@@ -23,8 +23,8 @@ names its rig and links here instead of repeating the setup.
 
 A benchmark number means nothing without the machine, the build type and
 the conditions it came from. "About 5x faster" cannot be checked. "4.0x on
-a Raspberry Pi 4, Release build, governor pinned, one pinned core, captured
-with Vernier 1.0.4" can.
+a Raspberry Pi 4, Release build, governor pinned, one pinned core, over ten
+runs" can.
 
 Each rig document states the hardware, the operating system and tool
 versions, the one-time setup, the build command, and the conditions a
