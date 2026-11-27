@@ -5,9 +5,9 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
 **Captured:** 2026-09-28 (UTC); written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`; valgrind 3.24.0. The console output of step 2, the
-doctor's row and the `--profile-args drd` run come from 2026-10-03 (UTC), a
-later tree at the same version.
+reported `bench 1.0.3`; valgrind 3.24.0. The doctor's row and the
+`--profile-args drd` run come from 2026-10-03 (UTC), a later tree at the same
+version.
 
 ## Overview
 
@@ -274,22 +274,22 @@ bench run ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind \
 Captured output:
 
 ```
-Running: valgrind --tool=helgrind --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
+Running: valgrind --tool=helgrind --fair-sched=try --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
 Note: Google Test filter = Helgrind.RacyTotal
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.RacyTotal
-[       OK ] Helgrind.RacyTotal (117 ms)
-[----------] 1 test from Helgrind (127 ms total)
+[       OK ] Helgrind.RacyTotal (118 ms)
+[----------] 1 test from Helgrind (132 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (180 ms total)
+[==========] 1 test from 1 test suite ran. (184 ms total)
 [  PASSED  ] 1 test.
 
 [profile] --profile helgrind: no case that ran was built with the profiler guard; the helgrind wrap still recorded the whole process.
 
-[bench] helgrind wrote helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (7222 bytes)
+[bench] helgrind wrote helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (7166 bytes)
 ```
 
 The `Running:` line is the wrap `bench run` built. The case ran, because
@@ -320,79 +320,79 @@ threads and marked `...`, the vector's template arguments are shortened to
 `std::vector<...>`, and the binary's directory to `...`:
 
 ```
-==178549== Helgrind, a thread error detector
-==178549== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
-==178549== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==178549== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
-==178549== Parent PID: 178548
-==178549==
-==178549== ---Thread-Announcement------------------------------------------
-==178549==
-==178549== Thread #3 was created
-==178549==    at 0x4E0DC03: clone (clone.S:65)
-==178549==    by 0x4DA5A87: create_thread (pthread_create.c:298)
-==178549==    by 0x4DA6587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
-==178549==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
-==178549==    by 0x4A9B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x10F07F: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
+==130978== Helgrind, a thread error detector
+==130978== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
+==130978== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==130978== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
+==130978== Parent PID: 130977
+==130978==
+==130978== ---Thread-Announcement------------------------------------------
+==130978==
+==130978== Thread #3 was created
+==130978==    at 0x4ECDC03: clone (clone.S:65)
+==130978==    by 0x4E65A87: create_thread (pthread_create.c:298)
+==130978==    by 0x4E66587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
+==130978==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
+==130978==    by 0x4B5B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x10FE9B: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
 ...
-==178549==
-==178549== ---Thread-Announcement------------------------------------------
-==178549==
-==178549== Thread #2 was created
-==178549==    at 0x4E0DC03: clone (clone.S:65)
-==178549==    by 0x4DA5A87: create_thread (pthread_create.c:298)
-==178549==    by 0x4DA6587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
-==178549==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
-==178549==    by 0x4A9B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x10F07F: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
+==130978==
+==130978== ---Thread-Announcement------------------------------------------
+==130978==
+==130978== Thread #2 was created
+==130978==    at 0x4ECDC03: clone (clone.S:65)
+==130978==    by 0x4E65A87: create_thread (pthread_create.c:298)
+==130978==    by 0x4E66587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
+==130978==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
+==130978==    by 0x4B5B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x10FE9B: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
 ...
-==178549==
-==178549== ----------------------------------------------------------------
-==178549==
-==178549== Possible data race during read of size 8 at 0x1FFF000118 by thread #3
-==178549== Locks held: none
-==178549==    at 0x11BC08: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==
-==178549== This conflicts with a previous write of size 8 by thread #2
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==  Address 0x1fff000118 is on thread #1's stack
-==178549==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
-==178549==
-==178549== ----------------------------------------------------------------
-==178549==
-==178549== Possible data race during write of size 8 at 0x1FFF000118 by thread #3
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==
-==178549== This conflicts with a previous write of size 8 by thread #2
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==  Address 0x1fff000118 is on thread #1's stack
-==178549==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
-==178549==
-==178549==
-==178549== Use --history-level=approx or =none to gain increased speed, at
-==178549== the cost of reduced accuracy of conflicting-access information
-==178549== For lists of detected and suppressed errors, rerun with: -s
-==178549== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)
+==130978==
+==130978== ----------------------------------------------------------------
+==130978==
+==130978== Possible data race during read of size 8 at 0x1FFF000208 by thread #3
+==130978== Locks held: none
+==130978==    at 0x120B68: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==
+==130978== This conflicts with a previous write of size 8 by thread #2
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==  Address 0x1fff000208 is on thread #1's stack
+==130978==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
+==130978==
+==130978== ----------------------------------------------------------------
+==130978==
+==130978== Possible data race during write of size 8 at 0x1FFF000208 by thread #3
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==
+==130978== This conflicts with a previous write of size 8 by thread #2
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==  Address 0x1fff000208 is on thread #1's stack
+==130978==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
+==130978==
+==130978==
+==130978== Use --history-level=approx or =none to gain increased speed, at
+==130978== the cost of reduced accuracy of conflicting-access information
+==130978== For lists of detected and suppressed errors, rerun with: -s
+==130978== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)
 ```
 
 Every line begins with the process id. Helgrind first introduces the threads
@@ -402,12 +402,12 @@ the earlier access it conflicts with:
 | Line                                                                                            | What it says                                                                                                                                                                                     |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Thread #3 was created`, under `---Thread-Announcement---`                                      | helgrind introduces each thread the first time a report names it, with the stack that created it: a `std::thread` started in `Helgrind_RacyTotal_Test::TestBody()`. Thread #1 is the main thread |
-| `Possible data race during read of size 8 at 0x1FFF000118 by thread #3`                         | an eight-byte read, of the `std::size_t` total, that helgrind found nothing ordering against another thread's access                                                                             |
+| `Possible data race during read of size 8 at 0x1FFF000208 by thread #3`                         | an eight-byte read, of the `std::size_t` total, that helgrind found nothing ordering against another thread's access                                                                             |
 | `Locks held: none`                                                                              | the locks thread #3 held when it read: none                                                                                                                                                      |
 | `at ... addJoinedLength(...) (14_HelgrindProfiler_Racy.cpp:21)`                                 | the read, and its source line: `total += joinV1(parts, sep).size();`                                                                                                                             |
-| `by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)` and the frames below it | the thread's start: a function of the C++ library that valgrind has no name for, helgrind's wrapper, and the C library's thread start                                                            |
+| `by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)` and the frames below it | the thread's start: a function of the C++ library that valgrind has no name for, helgrind's wrapper, and the C library's thread start                                                            |
 | `This conflicts with a previous write of size 8 by thread #2`                                   | the other access: thread #2's write of the same eight bytes, at the same line, with no lock held either                                                                                          |
-| `Address 0x1fff000118 is on thread #1's stack`                                                  | where the total is: a local variable of the test body, on the main thread's stack                                                                                                                |
+| `Address 0x1fff000208 is on thread #1's stack`                                                  | where the total is: a local variable of the test body, on the main thread's stack                                                                                                                |
 | `Possible data race during write of size 8`                                                     | the second race: thread #3 writing its sum back, against thread #2's write                                                                                                                       |
 | `ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)`                                | two places in the code, the read and the write of line 21, and three races at each; the six suppressed are valgrind's own, not this program's                                                    |
 
@@ -428,11 +428,9 @@ What not to conclude:
   page: under valgrind one thread runs at a time, and no addition was lost.
   Helgrind reports accesses that nothing orders, whether or not a run lost an
   addition to them.
-- **That the addresses mean anything.** `0x11BC08`, `0x1FFF000118` and the
+- **That the addresses mean anything.** `0x120B68`, `0x1FFF000208` and the
   rest belong to this build and this run: runs of the same binary with other
-  arguments put the total at `0x1FFF000298` and `0x1FFF000218`, and the frame
-  number the report gives for it changed between runs of one command,
-  `frame #5` in three and `frame #3` in two.
+  arguments put the total at `0x1FFF0002F8`.
 - **That the line numbers travel.** They are this revision's
   `14_HelgrindProfiler_Racy.cpp`; a build of an edited file names other lines.
   The names travel: `addJoinedLength`, `Locks held: none`, `read of size 8`,
