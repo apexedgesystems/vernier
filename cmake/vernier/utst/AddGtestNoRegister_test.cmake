@@ -1,7 +1,7 @@
 # ==============================================================================
 # AddGtestNoRegister_test.cmake - Test of vernier_add_gtest's NO_REGISTER
-# option and of vernier_add_test_program, which builds through it, and of the
-# class labels vernier_add_gtest gives the tests it registers
+# option, of vernier_add_test_program, which builds through it, of the class
+# labels vernier_add_gtest gives the tests it registers, and of WORKER_SOURCES
 #
 # Run with: cmake -DWORK_DIR=<dir> -DGENERATOR=<name> [-DMAKE_PROGRAM=<path>]
 #                 -DCXX_COMPILER=<path> -P AddGtestNoRegister_test.cmake
@@ -40,6 +40,12 @@
 # 8. With coverage on, the mixed program's coverage run is component and rig.
 # 9. A class among LABELS, or a pattern that names no test of its program,
 #    stops configuration, naming it.
+#
+# The GoogleTest project again, with one more program whose WORKER_SOURCES
+# source defines a case:
+#
+# 10. That source is among the program's sources, and its case is not
+#     registered; the cases of its SOURCES are.
 #
 # The work directory is kept when a check fails and removed when all pass.
 # ==============================================================================
@@ -111,6 +117,12 @@ elseif (REFUSED STREQUAL "UNMATCHED")
   vernier_add_gtest(TARGET Refused SOURCES Refused_uTest.cpp COMPONENT_PATTERNS "^Elsewhere\\.")
 endif ()
 
+if (WORKER)
+  vernier_add_gtest(TARGET WithWorker SOURCES Scanned_uTest.cpp WORKER_SOURCES Worker_uTest.cpp)
+  get_target_property(_worker_sources WithWorker SOURCES)
+  message(STATUS "PROBE WithWorker sources=[${_worker_sources}]")
+endif ()
+
 get_property(_maps GLOBAL PROPERTY VERNIER_COVERAGE_MAPPINGS)
 foreach (_target Ordinary Fixture Plain)
   if (TARGET ${_target})
@@ -131,6 +143,8 @@ file(WRITE "${_src}/Plain.cpp" "#if 0\nTEST(Plain, Case) {}\n#endif\nint main() 
 file(WRITE "${_src}/Mixed_uTest.cpp" "TEST(Mixed, Pure) {}\nTEST(Mixed, Tool) {}\n")
 file(WRITE "${_src}/Whole_uTest.cpp" "TEST(Whole, Case) {}\n")
 file(WRITE "${_src}/Refused_uTest.cpp" "TEST(Refused, Case) {}\n")
+file(WRITE "${_src}/Scanned_uTest.cpp" "TEST(Scanned, Case) {}\n")
+file(WRITE "${_src}/Worker_uTest.cpp" "TEST(Worker, Case) {}\n")
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -206,7 +220,7 @@ function (tests _case _out_var)
 endfunction ()
 
 # ------------------------------------------------------------------------------
-# Cases (9)
+# Cases (10)
 # ------------------------------------------------------------------------------
 
 # 1. Registration and placement, coverage off.
@@ -338,6 +352,14 @@ contains("${_out}" "Refused: COMPONENT_PATTERNS '^Elsewhere\\.' names no test of
          _named
 )
 expect("refused pattern: the error names the pattern" "${_named}" "yes")
+
+# 10. A worker source is compiled in, and its case is not registered.
+configure(worker -DWORKER=ON)
+expect("worker: configure status" "${_rc}" "0")
+tests(worker _all)
+expect("worker: registered tests" "${_all}" "FixtureController;Probe.Case;Scanned.Case")
+contains("${_out}" "PROBE WithWorker sources=[Scanned_uTest.cpp;Worker_uTest.cpp]" _compiled)
+expect("worker: the worker source is among the program's sources" "${_compiled}" "yes")
 
 if (_failures GREATER 0)
   message(FATAL_ERROR "${_failures} check(s) failed; the scratch project is kept in ${WORK_DIR}")

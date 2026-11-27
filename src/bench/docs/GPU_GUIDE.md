@@ -1001,9 +1001,10 @@ selected by `--profile X` fires around the measured window. No manual
 `attachGpuProfilerHooks` call required. A measurement that ends by an
 exception (a refused launch, a device's thread that failed, a callable that
 throws) calls the backend's `abortMeasure()` at once, with nothing analyzed or
-published. Only a backend that implements it ends what it started this way,
-gperf and Nsight today: gperf stops its capture and Nsight pops the window's
-NVTX range, so the case and other cases then measure under a capture or range
+published. Only a backend that implements it ends what it started this way:
+gperf stops its capture, Nsight pops the window's NVTX range, and perf,
+bpftrace, offcpu and callgrind under a wrap started by hand end their
+collections, so the case and other cases then measure under a capture or range
 of their own.
 
 ```cpp

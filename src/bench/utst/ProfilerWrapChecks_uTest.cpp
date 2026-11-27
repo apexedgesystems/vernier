@@ -22,6 +22,8 @@
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/inc/ProfilerRocprof.hpp"
 #include "src/bench/inc/ValgrindTool.hpp"
+#include "src/bench/src/CallgrindRequests.hpp"
+#include "src/bench/src/HeaptrackStatusTrap.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -37,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -408,8 +411,9 @@ TEST(ValgrindRuntime, UnwrappedRequestFailsWithTheWrapCommand) {
   EXPECT_EQ(RESULT.report.message, "missing: massif collects only when valgrind's massif runs "
                                    "the process, and valgrind does not run this one");
   EXPECT_EQ(RESULT.report.hint,
-            "Wrap it: valgrind --tool=massif --pages-as-heap=yes --massif-out-file=./massif.out "
-            "<this-binary> --profile massif --profile-args pages [...]; or run it with bench run "
+            "Wrap it: valgrind --tool=massif --fair-sched=try --pages-as-heap=yes "
+            "--massif-out-file=./massif.out <this-binary> --profile massif --profile-args pages "
+            "[...]; or run it with bench run "
             "--profile massif --profile-args pages, which wraps it.");
   ASSERT_NE(planOf(RESULT), nullptr);
   EXPECT_EQ(planOf(RESULT)->launch, LaunchContext::NOT_WRAPPED);
@@ -632,29 +636,61 @@ TEST(ValgrindAnalysis, CallgrindManualWrapCannotAnnotate) {
 
 /* ----------------------------- Callgrind's Window ----------------------------- */
 
-/** @test A wrap started by hand switches the window when callgrind_control is there. */
+/**
+ * @test Every libbench has callgrind's client requests, from the callgrind.h
+ * it carries, whatever its build machine has installed: only NVALGRIND, the
+ * way to compile them out, leaves the window to callgrind_control.
+ */
+TEST(CallgrindWindowCheck, RequestsBuiltInUnlessBuiltWithNvalgrind) {
+#if defined(NVALGRIND)
+  EXPECT_FALSE(vernier::bench::callgrind::requestsBuiltIn());
+#else
+  EXPECT_TRUE(vernier::bench::callgrind::requestsBuiltIn());
+#endif
+}
+
+/**
+ * @test A wrap started by hand with callgrind_control on PATH switches the
+ * window: ready with callgrind's client requests; a caveat naming valgrind's
+ * gdbserver in a build with NVALGRIND, which switches with callgrind_control.
+ */
 TEST(CallgrindWindowCheck, ManualWrapWithControlToggles) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
   dir.install("fake_helper.sh", "callgrind_control");
   const ReadinessResult RESULT = vernier::bench::checkCallgrindRequestWithIdentity(
       requestFor("callgrind", ReadinessScope::RUNTIME), dir.context(), running("callgrind"));
-  EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  if (vernier::bench::callgrind::requestsBuiltIn()) {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  } else {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT) << RESULT.report.message;
+    EXPECT_NE(RESULT.report.message.find("through valgrind's gdbserver"), std::string::npos)
+        << RESULT.report.message;
+  }
   ASSERT_NE(planOf(RESULT), nullptr);
   EXPECT_TRUE(planOf(RESULT)->canToggle);
   EXPECT_EQ(planOf(RESULT)->launch, LaunchContext::MANUALLY_WRAPPED);
 }
 
-/** @test Without callgrind_control the window cannot be switched: a caveat, and no toggling. */
-TEST(CallgrindWindowCheck, ManualWrapWithoutControlIsACaveat) {
+/**
+ * @test Without callgrind_control a wrap started by hand still has its window
+ * switched with callgrind's client requests; in a build with NVALGRIND it
+ * cannot be: a caveat, and no toggling.
+ */
+TEST(CallgrindWindowCheck, ManualWrapWithoutControlSwitchesWithRequests) {
   const FakeToolDir DIR;
   ASSERT_TRUE(DIR.ok());
   const ReadinessResult RESULT = vernier::bench::checkCallgrindRequestWithIdentity(
       requestFor("callgrind", ReadinessScope::RUNTIME), DIR.context(), running("callgrind"));
-  EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT);
-  EXPECT_NE(RESULT.report.message.find("callgrind_control is not on PATH"), std::string::npos);
   ASSERT_NE(planOf(RESULT), nullptr);
-  EXPECT_FALSE(planOf(RESULT)->canToggle);
+  if (vernier::bench::callgrind::requestsBuiltIn()) {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+    EXPECT_TRUE(planOf(RESULT)->canToggle);
+  } else {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT);
+    EXPECT_NE(RESULT.report.message.find("callgrind_control is not on PATH"), std::string::npos);
+    EXPECT_FALSE(planOf(RESULT)->canToggle);
+  }
 }
 
 /** @test bench run's wrap records the whole process: nothing is switched. */
@@ -670,7 +706,11 @@ TEST(CallgrindWindowCheck, BenchRunsWrapIsLeftAlone) {
   EXPECT_FALSE(planOf(RESULT)->canToggle);
 }
 
-/** @test The printed wrap opens the window with --instr-atstart=no only when it can be switched. */
+/**
+ * @test The printed wrap opens the window with --instr-atstart=no only when it
+ * can be switched: always with callgrind's client requests, and in a build
+ * with NVALGRIND when callgrind_control is on PATH.
+ */
 TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
@@ -679,17 +719,23 @@ TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   const ValgrindIdentity NONE;
   const ReadinessResult WITHOUT =
       vernier::bench::checkCallgrindRequestWithIdentity(REQUEST, dir.context(), NONE);
-  EXPECT_EQ(WITHOUT.report.hint.rfind("Wrap it: valgrind --tool=callgrind "
-                                      "--callgrind-out-file=./callgrind.out <this-binary> "
-                                      "--profile callgrind [...]",
+  EXPECT_EQ(WITHOUT.report.hint.rfind(vernier::bench::callgrind::requestsBuiltIn()
+                                          ? "Wrap it: valgrind --tool=callgrind --fair-sched=try "
+                                            "--instr-atstart=no "
+                                            "--callgrind-out-file=./callgrind.out <this-binary> "
+                                            "--profile callgrind [...]"
+                                          : "Wrap it: valgrind --tool=callgrind --fair-sched=try "
+                                            "--callgrind-out-file=./callgrind.out <this-binary> "
+                                            "--profile callgrind [...]",
                                       0),
             0U)
       << WITHOUT.report.hint;
   dir.install("fake_helper.sh", "callgrind_control");
   const ReadinessResult WITH =
       vernier::bench::checkCallgrindRequestWithIdentity(REQUEST, dir.context(), NONE);
-  EXPECT_EQ(WITH.report.hint.rfind("Wrap it: valgrind --tool=callgrind --instr-atstart=no "
-                                   "--callgrind-out-file=./callgrind.out <this-binary>",
+  EXPECT_EQ(WITH.report.hint.rfind("Wrap it: valgrind --tool=callgrind --fair-sched=try "
+                                   "--instr-atstart=no --callgrind-out-file=./callgrind.out "
+                                   "<this-binary>",
                                    0),
             0U)
       << WITH.report.hint;
@@ -749,29 +795,38 @@ TEST(HeaptrackCheck, RouteAndRefusalMatchTheSharedTable) {
   EXPECT_EQ(refusals, 1);
 }
 
-/** @test The doctor records /bin/true with heaptrack into a private directory, which it removes. */
+/**
+ * @test The doctor records /bin/true with heaptrack into a private directory,
+ * then runs /bin/false with it into another, and removes both. A heaptrack
+ * that passes the program's status through, as heaptrack 1.5 does, is READY
+ * with the row's one sentence.
+ */
 TEST(HeaptrackCheck, DoctorRecordsTheProbe) {
   for (const std::string MODE : {"ok", "gz"}) {
     FakeToolDir dir;
     ASSERT_TRUE(dir.ok());
-    dir.install("fake_heaptrack.sh", "heaptrack");
+    const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
     const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
         requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
         dir.context({{"FAKE_HEAPTRACK_MODE", MODE}}), "");
     EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << MODE << ": " << RESULT.report.message;
-    EXPECT_NE(RESULT.report.message.find(std::string{"which wrote probe."} +
-                                         (MODE == "gz" ? "gz" : "zst")),
-              std::string::npos)
-        << RESULT.report.message;
+    EXPECT_EQ(RESULT.report.message, "heaptrack records /bin/true (probe: " + TOOL +
+                                         " -o <private directory>/probe /bin/true, which wrote "
+                                         "probe." +
+                                         (MODE == "gz" ? "gz" : "zst") + ")")
+        << MODE;
     const std::vector<std::string> LINES = dir.logLines("heaptrack ");
-    ASSERT_EQ(LINES.size(), 1U) << dir.log();
-    const std::size_t AT = LINES.front().find(" -o ");
-    ASSERT_NE(AT, std::string::npos) << LINES.front();
-    const std::string OUTPUT =
-        LINES.front().substr(AT + 4, LINES.front().find(' ', AT + 4) - AT - 4);
-    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(OUTPUT).parent_path()))
-        << "the probe's directory was left behind: " << OUTPUT;
-    EXPECT_EQ(LINES.front().substr(LINES.front().size() - 10), " /bin/true") << LINES.front();
+    ASSERT_EQ(LINES.size(), 2U) << dir.log();
+    for (std::size_t i = 0; i < LINES.size(); ++i) {
+      const std::string& LINE = LINES[i];
+      const std::size_t AT = LINE.find(" -o ");
+      ASSERT_NE(AT, std::string::npos) << LINE;
+      const std::string OUTPUT = LINE.substr(AT + 4, LINE.find(' ', AT + 4) - AT - 4);
+      EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(OUTPUT).parent_path()))
+          << "the probe's directory was left behind: " << OUTPUT;
+      const std::string PROGRAM = (i == 0) ? " /bin/true" : " /bin/false";
+      EXPECT_EQ(LINE.substr(LINE.size() - PROGRAM.size()), PROGRAM) << LINE;
+    }
   }
 }
 
@@ -794,6 +849,121 @@ TEST(HeaptrackCheck, BrokenSilentOrMissingHeaptrack) {
   EXPECT_EQ(SILENT.cause, ReadinessCause::UNUSABLE);
   EXPECT_NE(SILENT.report.message.find("wrote no trace"), std::string::npos)
       << SILENT.report.message;
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever the program it runs returns, as
+ * heaptrack 1.3's script does, is READY where bash, running it with a trap,
+ * reports the status of the program it starts: the doctor runs it so for
+ * /bin/false, /bin/true and a program ended by SIGKILL, and the row says what
+ * those three reported.
+ */
+TEST(HeaptrackCheck, StatusDroppedIsReadyWhenItsShellReportsIt) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  EXPECT_EQ(RESULT.report.message,
+            "heaptrack records /bin/true (probe: " + TOOL +
+                " -o <private directory>/probe /bin/true, which wrote probe.zst); it exits 0 for "
+                "a program that fails (probe: " +
+                TOOL +
+                " -o <private directory>/probe /bin/false), so bench run runs it under bash, "
+                "whose trap takes each program's status from the shell that waits on it "
+                "(checked: /bin/false 1, /bin/true 0, a program ended by SIGKILL 137)");
+  EXPECT_EQ(RESULT.report.hint, "") << "a READY row's hint";
+  const std::vector<std::string> LINES = dir.logLines("heaptrack ");
+  ASSERT_EQ(LINES.size(), 5U) << dir.log();
+  const auto ENDS_WITH = [](const std::string& line, const std::string& tail) {
+    return line.size() >= tail.size() &&
+           line.compare(line.size() - tail.size(), tail.size(), tail) == 0;
+  };
+  EXPECT_TRUE(ENDS_WITH(LINES[2], " /bin/false")) << LINES[2];
+  EXPECT_TRUE(ENDS_WITH(LINES[3], " /bin/true")) << LINES[3];
+  EXPECT_TRUE(ENDS_WITH(LINES[4], " /bin/sh -c kill -KILL $$")) << LINES[4];
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever its program returns, run by a shell
+ * that does not report that program's status (the script starts it otherwise
+ * than the trap expects), is UNUSABLE: whether a benchmark passed under it
+ * cannot be known. The row names what the probe saw and a heaptrack that
+ * passes the status through.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithoutItsShellsReportIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status-unkeyed"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_EQ(RESULT.report.message,
+            "unusable: heaptrack exits 0 for a program that fails (" + TOOL +
+                " -o <private directory>/probe /bin/false exited 0), and the shell that runs it "
+                "under bash did not report the status of the program it started (/bin/false: no "
+                "status, not 1), so whether a benchmark passed under it cannot be known");
+  EXPECT_NE(RESULT.report.hint.find("as heaptrack 1.5.0 does"), std::string::npos)
+      << RESULT.report.hint;
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever its program returns, run by a shell
+ * that reports a status other than its program's (the script inverts it), is
+ * UNUSABLE, naming the status the shell reported.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithAWrongReportIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status-inverted"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_NE(RESULT.report.message.find("did not report the status of the program it started "
+                                       "(/bin/false: 0, not 1), so whether a benchmark passed "
+                                       "under it cannot be known"),
+            std::string::npos)
+      << RESULT.report.message;
+}
+
+/**
+ * @test Without bash on PATH, a heaptrack that drops its program's status is
+ * UNUSABLE, naming bash.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithoutBashIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_NE(RESULT.report.message.find(
+                "and bash, under which bench run takes each program's status from the shell "
+                "that waits on it, is not on PATH"),
+            std::string::npos)
+      << RESULT.report.message;
+  EXPECT_NE(RESULT.report.hint.find("Install bash"), std::string::npos) << RESULT.report.hint;
+  EXPECT_EQ(dir.logLines("heaptrack ").size(), 2U) << "only the two probes run: " << dir.log();
+}
+
+/**
+ * @test The trap the doctor gives bash is the one bench run gives it, as the
+ * shared fixture holds it.
+ */
+TEST(HeaptrackCheck, StatusTrapIsTheSharedOne) {
+  std::ifstream in(std::string{VERNIER_SHARED_FIXTURE_DIR} + "/heaptrack_status.bash");
+  ASSERT_TRUE(in.is_open()) << "the shared fixture";
+  std::stringstream text;
+  text << in.rdbuf();
+  EXPECT_EQ(text.str(), vernier::bench::heaptrack_status::TRAP);
 }
 
 /** @test With libtcmalloc in the process, the doctor's heaptrack row is a caveat naming it. */

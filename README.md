@@ -83,7 +83,7 @@ side, so remove the directory when switching between them.
 - 15 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
   and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
 - Per-backend environment doctor (`--profile-check`) with actionable hints
-- SIGALRM watchdog on the `measured()` and `throughputLoop()` loops under
+- Watchdog on the `measured()` and `throughputLoop()` loops under
   `--profile`, so such a loop that hangs while profiled fails loudly (exit
   status 2) instead of hanging the run; `contentionRun()` and GPU measurements
   are not covered
@@ -181,8 +181,10 @@ can be moved.
 #### Library versions
 
 A shared library's SONAME is its ABI identity and is separate from the release
-number. `libmonitor` follows the release major (`libmonitor.so.1`,
-file `libmonitor.so.<release>`). `libbench` and `libbench_cuda` carry their own
+number. `libmonitor` carries its own ABI number, currently 2
+(`libmonitor.so.2`, file `libmonitor.so.2.<minor>.<patch>`): header code
+compiled into the program allocates the file sink that the library constructs.
+`libbench` and `libbench_cuda` carry their own
 ABI number, currently 2 (`libbench.so.2`, file `libbench.so.2.<minor>.<patch>`):
 they exchange `PerfConfig`, `Stats` and `PerfGpuConfig` objects with header code
 compiled into the benchmark, and that layout changed after the `.so.1`
@@ -205,6 +207,8 @@ For a packager this means:
   benchmark code calls), even when no struct's size changes. Both bench
   libraries read that one number; until a release ships it,
   `BENCH_ABI_VERSION` in `src/bench/inc/PerfAbi.hpp` alone moves.
+- Raise `MONITOR_ABI_SOVERSION` in `src/monitor/CMakeLists.txt` for any change
+  to the file sink's layout or to an exported signature of `libmonitor`.
 
 ---
 
@@ -384,6 +388,7 @@ vernier/
     bench/                    Benchmarking library (perf, GPU harness, profilers)
       inc/                    Public headers (Perf.hpp, PerfGpu.hpp, Nvtx.hpp, profilers)
       src/                    Profiler implementations + CUPTI collector
+      third_party/            valgrind's client-request headers, unmodified
       bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
       dtst/                   Component tests (backend and probe lifecycles)
@@ -405,7 +410,9 @@ vernier/
 
 ## 10. License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details. The valgrind headers in
+`src/bench/third_party/valgrind/` keep the BSD-style license at the top of
+each file ([third-party source](src/bench/third_party/README.md)).
 
 ---
 

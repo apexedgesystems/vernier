@@ -20,8 +20,10 @@ set(VERNIER_COVERAGE_OUTPUT_DIR
     CACHE PATH "Coverage report output directory"
 )
 
+# Other projects' code is left out: what GoogleTest's fetch brings and what a
+# third_party/ folder carries.
 set(VERNIER_COVERAGE_IGNORE_REGEX
-    ".*/build/_deps/.*|.*_uTest.*|.*_dTest.*|.*_pTest.*|/usr/local/.*"
+    ".*/build/_deps/.*|.*/third_party/.*|.*_uTest.*|.*_dTest.*|.*_pTest.*|/usr/local/.*"
     CACHE STRING "Regex for files to ignore in coverage reports"
 )
 

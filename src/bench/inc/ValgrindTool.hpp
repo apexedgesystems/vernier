@@ -65,8 +65,20 @@ struct OutputFile {
 [[nodiscard]] OutputFile outputFile(const std::string& backend);
 
 /**
+ * @brief The scheduler option every wrap passes after --tool: valgrind's fair
+ * scheduler.
+ *
+ * valgrind runs one thread at a time, and its default scheduler lets a thread
+ * that computes keep the others from running: in a benchmark with threads,
+ * the watchdog's thread among them, so a hung loop is ended late or not at
+ * all. The fair scheduler takes threads in turn. "try" falls back to the
+ * default where the platform lacks it; "yes" would refuse to start there.
+ */
+inline constexpr const char* FAIR_SCHEDULER = "--fair-sched=try";
+
+/**
  * @brief valgrind's arguments for @p mode writing into @p dir, before the
- * benchmark: --tool, the mode's options and the output option.
+ * benchmark: --tool, FAIR_SCHEDULER, the mode's options and the output option.
  *
  * The same as the route `bench run` starts (tools/rust/src/bench/runner.rs);
  * the shared route table pins the two together.
@@ -77,12 +89,12 @@ wrapArguments(const std::string& backend, const ValgrindMode& mode, const std::s
 /**
  * @brief The remedy of a request that is not wrapped as it needs: the valgrind
  * command that wraps the benchmark by hand (with @p extraOptions after the
- * tool, writing into the working directory), then `bench run` for the same
- * request.
+ * tool and FAIR_SCHEDULER, writing into the working directory), then `bench
+ * run` for the same request.
  *
- * "Wrap it: valgrind --tool=massif --massif-out-file=./massif.out
- * <this-binary> --profile massif [...]; or run it with bench run --profile
- * massif, which wraps it." The wrap command comes first and ends at
+ * "Wrap it: valgrind --tool=massif --fair-sched=try
+ * --massif-out-file=./massif.out <this-binary> --profile massif [...]; or run
+ * it with bench run --profile massif, which wraps it." The wrap command comes first and ends at
  * `<this-binary>`, so a script can take it from the report.
  */
 [[nodiscard]] std::string wrapRemedy(const std::string& backend, const ValgrindMode& mode,

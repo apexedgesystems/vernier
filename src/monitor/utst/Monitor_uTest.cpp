@@ -11,21 +11,32 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
+#include <vector>
 
+using vernier::monitor::AlertLevel;
 using vernier::monitor::Monitor;
 using vernier::monitor::MonitorConfig;
 using vernier::monitor::MonitorTag;
+using vernier::monitor::nowNs;
 using vernier::monitor::ScopeGuard;
 using vernier::monitor::SINK_CONSOLE;
 using vernier::monitor::SINK_FILE;
@@ -53,6 +64,55 @@ std::size_t countLines(const std::filesystem::path& path) {
 std::filesystem::path sinkPath(const char* stem) {
   return std::filesystem::temp_directory_path() /
          ("vernier_mon_" + std::string(stem) + "_" + std::to_string(::getpid()) + ".log");
+}
+
+/// The lines of @p text, each with its runs of spaces collapsed to one and trimmed.
+std::vector<std::string> collapsedLines(const std::string& text) {
+  std::vector<std::string> lines;
+  std::string line;
+  bool space = false;
+  for (const char C : text + "\n") {
+    if (C == '\n') {
+      lines.push_back(line);
+      line.clear();
+      space = false;
+    } else if (C == ' ') {
+      space = !line.empty();
+    } else {
+      if (space) {
+        line += ' ';
+        space = false;
+      }
+      line += C;
+    }
+  }
+  return lines;
+}
+
+/// True if @p lines holds @p line.
+bool hasLine(const std::vector<std::string>& lines, const std::string& line) {
+  return std::find(lines.begin(), lines.end(), line) != lines.end();
+}
+
+/// A sink file's records, each split at its tabs (none if the file does not exist).
+std::vector<std::vector<std::string>> readRecords(const std::filesystem::path& path) {
+  std::vector<std::vector<std::string>> records;
+  std::ifstream f(path);
+  std::string line;
+  while (std::getline(f, line)) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (;;) {
+      const std::size_t TAB = line.find('\t', start);
+      fields.push_back(line.substr(start, TAB == std::string::npos ? TAB : TAB - start));
+      if (TAB == std::string::npos) {
+        break;
+      }
+      start = TAB + 1;
+    }
+    records.push_back(fields);
+  }
+  return records;
 }
 
 /**
@@ -150,29 +210,35 @@ TEST(MonitorTest, DoubleStop) {
   mon.stop(); // Should not crash
 }
 
-/** @test Scope recording works end-to-end */
+/** @test Records a scope's duration from its two timestamps, and its start as its timestamp */
 TEST(MonitorTest, ScopeRecording) {
+  const auto TMP_PATH = sinkPath("scope");
+  std::filesystem::remove(TMP_PATH);
+
   MonitorConfig cfg;
-  cfg.sinks = SINK_NONE;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
   mon.start();
 
   const MonitorTag TAG("test", 1);
-  {
-    ScopeGuard guard(mon, "work", TAG);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  // Allow I/O thread to drain
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.recordScope("x", TAG, 1000, 2501000); // 2.5 ms from 1000 ns
   mon.stop();
 
   EXPECT_EQ(mon.summary().size(), 1u);
   const auto& ENTRIES = mon.summary().entries();
-  const auto IT = ENTRIES.find("test/1::work");
+  const auto IT = ENTRIES.find("test/1::x");
   ASSERT_NE(IT, ENTRIES.end());
   EXPECT_EQ(IT->second.count, 1u);
-  EXPECT_GT(IT->second.median(), 0.0); // Duration in ms
+  EXPECT_DOUBLE_EQ(IT->second.median(), 2.5); // ms
+
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 1u);
+  ASSERT_GE(RECORDS[0].size(), 5u);
+  EXPECT_EQ(RECORDS[0][0], "1000");    // the timestamp: the scope's start
+  EXPECT_EQ(RECORDS[0][4], "2500000"); // the duration in nanoseconds
+
+  std::filesystem::remove(TMP_PATH);
 }
 
 /** @test Counter increment recording */
@@ -218,29 +284,57 @@ TEST(MonitorTest, GaugeRecording) {
   EXPECT_DOUBLE_EQ(IT->second.maxVal, 100.0);
 }
 
-/** @test Threshold breach detection */
+/** @test Flags only a scope longer than the threshold of its own scope and tag id */
 TEST(MonitorTest, ThresholdBreach) {
+  const auto TMP_PATH = sinkPath("breach");
+  std::filesystem::remove(TMP_PATH);
+
   MonitorConfig cfg;
-  cfg.sinks = SINK_NONE;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
-  mon.setThreshold("work", 4, 1000); // 1ms threshold
+  mon.setThreshold("work", 4, 1000); // 1 ms
   mon.start();
 
-  const MonitorTag TAG("slow", 4);
-
-  // Record a scope that exceeds 1ms
-  {
-    ScopeGuard guard(mon, "work", TAG);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Under, at and over the threshold (only longer breaches), then 5 ms on the
+  // same scope with another tag id and on another scope with the same id.
+  const MonitorTag TAG4("slow", 4);
+  const MonitorTag TAG5("slow", 5);
+  mon.recordScope("work", TAG4, 1000, 1000 + 999000);
+  mon.recordScope("work", TAG4, 1000, 1000 + 1000000);
+  mon.recordScope("work", TAG4, 1000, 1000 + 1001000);
+  mon.recordScope("work", TAG5, 1000, 1000 + 5000000);
+  mon.recordScope("other", TAG4, 1000, 1000 + 5000000);
   mon.stop();
 
   const auto& ENTRIES = mon.summary().entries();
-  const auto IT = ENTRIES.find("slow/4::work");
-  ASSERT_NE(IT, ENTRIES.end());
-  EXPECT_GE(IT->second.breaches, 1u);
+  const auto WORK4 = ENTRIES.find("slow/4::work");
+  const auto WORK5 = ENTRIES.find("slow/5::work");
+  const auto OTHER4 = ENTRIES.find("slow/4::other");
+  ASSERT_NE(WORK4, ENTRIES.end());
+  ASSERT_NE(WORK5, ENTRIES.end());
+  ASSERT_NE(OTHER4, ENTRIES.end());
+  EXPECT_EQ(WORK4->second.count, 3u);
+  EXPECT_EQ(WORK4->second.breaches, 1u);
+  EXPECT_EQ(WORK5->second.breaches, 0u);
+  EXPECT_EQ(OTHER4->second.breaches, 0u);
+
+  // The breach's record carries the threshold, in microseconds, as its value.
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 5u);
+  std::size_t breaches = 0;
+  for (const auto& record : RECORDS) {
+    if (record.size() == 7 && record[6] == "THRESHOLD_BREACH") {
+      ++breaches;
+      EXPECT_EQ(record[2], "slow/4");
+      EXPECT_EQ(record[3], "work");
+      EXPECT_EQ(record[4], "1001000");
+      EXPECT_EQ(record[5], "1000.000000");
+    }
+  }
+  EXPECT_EQ(breaches, 1u);
+
+  std::filesystem::remove(TMP_PATH);
 }
 
 /** @test Disabled monitor skips all recording */
@@ -292,33 +386,480 @@ TEST(MonitorTest, RuntimeToggle) {
   EXPECT_EQ(IT->second.count, 2u); // Skipped the disabled one
 }
 
-/** @test File sink writes output */
+/**
+ * @test Writes each kind's record in the documented columns, a breach with a seventh
+ *
+ * timestamp_ns, kind, tag/id, scope, duration_ns, value (MonitorFileSink.hpp).
+ * The scopes start above 2^32 ns, so a timestamp cut to 32 bits shows.
+ */
 TEST(MonitorTest, FileSinkOutput) {
-  const auto TMP_PATH = std::filesystem::temp_directory_path() / "vernier_mon_test.log";
+  const auto TMP_PATH = sinkPath("records");
   std::filesystem::remove(TMP_PATH);
 
   MonitorConfig cfg;
   cfg.sinks = SINK_FILE;
   cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
+  mon.setThreshold("slow", 7, 1000);
+  mon.start();
+
+  constexpr std::uint64_t T0 = 5000000000ULL;
+  const MonitorTag TAG("file", 7);
+  const std::uint64_t BEFORE = nowNs();
+  mon.recordScope("work", TAG, T0, T0 + 2500000);
+  mon.recordScope("slow", TAG, T0 + 10, T0 + 10 + 3000000);
+  mon.gauge("depth", TAG, 42.5);
+  mon.increment("event", TAG, 3.0);
+  const std::uint64_t AFTER = nowNs();
+  mon.stop();
+
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 4u);
+  EXPECT_EQ(RECORDS[0], (std::vector<std::string>{"5000000000", "SCOPE", "file/7", "work",
+                                                  "2500000", "0.000000"}));
+  EXPECT_EQ(RECORDS[1], (std::vector<std::string>{"5000000010", "SCOPE", "file/7", "slow",
+                                                  "3000000", "1000.000000", "THRESHOLD_BREACH"}));
+  // A gauge and a counter are stamped when recorded and have no duration.
+  ASSERT_EQ(RECORDS[2].size(), 6u);
+  EXPECT_EQ(std::vector<std::string>(RECORDS[2].begin() + 1, RECORDS[2].end()),
+            (std::vector<std::string>{"GAUGE", "file/7", "depth", "0", "42.500000"}));
+  ASSERT_EQ(RECORDS[3].size(), 6u);
+  EXPECT_EQ(std::vector<std::string>(RECORDS[3].begin() + 1, RECORDS[3].end()),
+            (std::vector<std::string>{"COUNTER", "file/7", "event", "0", "3.000000"}));
+  for (const std::size_t I : {std::size_t{2}, std::size_t{3}}) {
+    const std::uint64_t STAMP = std::stoull(RECORDS[I][0]);
+    EXPECT_GE(STAMP, BEFORE) << "record " << I;
+    EXPECT_LE(STAMP, AFTER) << "record " << I;
+  }
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/** @test A file sink at WARNING writes the threshold breach and nothing else */
+TEST(MonitorTest, FileSinkAtWarningWritesOnlyTheBreach) {
+  const auto TMP_PATH = sinkPath("warning");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
+  cfg.fileLevel = AlertLevel::WARNING;
+  Monitor mon(cfg);
+  mon.setThreshold("slow", 7, 1000);
   mon.start();
 
   const MonitorTag TAG("file", 7);
-  mon.increment("event", TAG, 1.0);
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.recordScope("work", TAG, 1000, 1000 + 2500000);
+  mon.recordScope("slow", TAG, 1000, 1000 + 3000000);
+  mon.gauge("depth", TAG, 42.5);
+  mon.increment("event", TAG, 3.0);
   mon.stop();
 
-  // Verify file was written
-  std::ifstream f(TMP_PATH);
-  ASSERT_TRUE(f.is_open());
-  std::string line;
-  ASSERT_TRUE(std::getline(f, line));
-  EXPECT_TRUE(line.find("COUNTER") != std::string::npos);
-  EXPECT_TRUE(line.find("file/7") != std::string::npos);
-  EXPECT_TRUE(line.find("event") != std::string::npos);
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 1u);
+  EXPECT_EQ(RECORDS[0], (std::vector<std::string>{"1000", "SCOPE", "file/7", "slow", "3000000",
+                                                  "1000.000000", "THRESHOLD_BREACH"}));
+  EXPECT_EQ(mon.summary().size(), 4u) << "the summary keeps every kind";
 
   std::filesystem::remove(TMP_PATH);
+}
+
+/**
+ * @test A file sink whose writes fail says so on stderr, naming the file and
+ *       the error once, and at close how many records were not written. On
+ *       /dev/full a buffered record fails at the flush, not at the write.
+ */
+TEST(MonitorTest, FileSinkWriteFailureIsReported) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = "/dev/full";
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      Monitor mon(cfg);
+      mon.start();
+      mon.increment("event", MonitorTag("full", 15), 1.0);
+      mon.stop();
+    }
+    captured = capture.text();
+  }
+
+  EXPECT_EQ(captured,
+            "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
+                "\nvernier::monitor: '/dev/full' may be missing up to 1 of the 1 record given to "
+                "it (given after the last write it confirmed, before a write failed)\n");
+}
+
+namespace {
+
+/// The records a file sink test writes: 1000 counter samples, about 35 bytes
+/// each as the sink formats them.
+constexpr int SINK_RECORDS = 1000;
+
+/** @brief Hand @p sink SINK_RECORDS counter samples. */
+void writeSinkRecords(vernier::monitor::MonitorFileSink& sink) {
+  for (int i = 0; i < SINK_RECORDS; ++i) {
+    vernier::monitor::Sample sample;
+    sample.timestampNs = 1000 + static_cast<std::uint64_t>(i);
+    sample.kind = vernier::monitor::SampleKind::COUNTER;
+    sample.tag = MonitorTag("sink", 9);
+    std::strncpy(sample.scope, "loop", sizeof(sample.scope) - 1);
+    sample.value = 1.0;
+    sink.write(sample);
+  }
+}
+
+/** @brief The complete (newline-ended) records in @p text. */
+std::size_t completeRecords(const std::string& text) {
+  return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+}
+
+/** @brief The whole of the file at @p path, or "" when it cannot be read. */
+std::string fileText(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// The file size limit of the sink children below: about 227 records.
+constexpr rlim_t SINK_LIMIT = 8192;
+
+/// One step of a sink child: write records [first, first + count), flush,
+/// or lift the file size limit.
+struct SinkStep {
+  enum Kind { WRITE, FLUSH, LIFT_LIMIT } kind;
+  int first = 0;
+  int count = 0;
+};
+
+/**
+ * @brief Hand @p sink the counter records @p first to @p first + @p count - 1,
+ *        each stamped 1000 + its index.
+ */
+void writeRecordRange(vernier::monitor::MonitorFileSink& sink, int first, int count) {
+  for (int i = first; i < first + count; ++i) {
+    vernier::monitor::Sample sample;
+    sample.timestampNs = 1000 + static_cast<std::uint64_t>(i);
+    sample.kind = vernier::monitor::SampleKind::COUNTER;
+    sample.tag = MonitorTag("sink", 9);
+    std::strncpy(sample.scope, "loop", sizeof(sample.scope) - 1);
+    sample.value = 1.0;
+    sink.write(sample);
+  }
+}
+
+/** @brief Whether record @p index is in @p text whole, as the sink writes it. */
+bool hasRecord(const std::string& text, int index) {
+  const std::string RECORD =
+      std::to_string(1000 + index) + "\tCOUNTER\tsink/9\tloop\t0\t1.000000\n";
+  return text.compare(0, RECORD.size(), RECORD) == 0 ||
+         text.find("\n" + RECORD) != std::string::npos;
+}
+
+/** @brief How many of records @p first to @p first + @p count - 1 @p text lacks. */
+int missingRecords(const std::string& text, int first, int count) {
+  int missing = 0;
+  for (int i = first; i < first + count; ++i) {
+    missing += hasRecord(text, i) ? 0 : 1;
+  }
+  return missing;
+}
+
+/**
+ * @brief How many of records @p first to @p first + @p count - 1 @p text
+ *        holds whole at or after byte @p from, a record directly after a cut
+ *        one included.
+ */
+int recordsFrom(const std::string& text, int first, int count, std::size_t from) {
+  int found = 0;
+  for (int i = first; i < first + count; ++i) {
+    const std::string RECORD = std::to_string(1000 + i) + "\tCOUNTER\tsink/9\tloop\t0\t1.000000\n";
+    found += text.find(RECORD, from) != std::string::npos ? 1 : 0;
+  }
+  return found;
+}
+
+/** @brief What a sink child left: its file, its stderr, its wait status. */
+struct SinkChildRun {
+  std::string written;
+  std::string said;
+  int status = -1;
+  std::string path;
+};
+
+/**
+ * @brief Run @p steps against a MonitorFileSink in a forked child whose file
+ *        size limit is SINK_LIMIT bytes (the soft limit; SIGXFSZ ignored),
+ *        close the sink, and return the file and what the child wrote on
+ *        stderr. @p name keeps each test's folder its own.
+ */
+SinkChildRun runSinkChild(const std::string& name, const std::vector<SinkStep>& steps) {
+  const std::string DIR = (std::filesystem::temp_directory_path() /
+                           ("vernier_sink_" + name + "_" + std::to_string(::getpid())))
+                              .string();
+  std::filesystem::create_directories(DIR);
+  SinkChildRun run;
+  run.path = DIR + "/records.vmon";
+  const std::string ERR = DIR + "/stderr.txt";
+  const pid_t CHILD = ::fork();
+  if (CHILD == 0) {
+    std::FILE* err = std::fopen(ERR.c_str(), "w");
+    if (err == nullptr || ::dup2(::fileno(err), STDERR_FILENO) < 0) {
+      ::_exit(3);
+    }
+    std::signal(SIGXFSZ, SIG_IGN);
+    struct rlimit limit{};
+    if (::getrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    const rlim_t ORIGINAL = limit.rlim_cur;
+    limit.rlim_cur = SINK_LIMIT;
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    {
+      vernier::monitor::MonitorFileSink sink(run.path);
+      for (const SinkStep& S : steps) {
+        if (S.kind == SinkStep::WRITE) {
+          writeRecordRange(sink, S.first, S.count);
+        } else if (S.kind == SinkStep::FLUSH) {
+          sink.flush();
+        } else {
+          limit.rlim_cur = ORIGINAL;
+          if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+            ::_exit(5);
+          }
+        }
+      }
+    }
+    std::fflush(stderr);
+    ::_exit(0);
+  }
+  if (CHILD > 0 && ::waitpid(CHILD, &run.status, 0) != CHILD) {
+    run.status = -1;
+  }
+  run.written = fileText(run.path);
+  run.said = fileText(ERR);
+  std::filesystem::remove_all(DIR);
+  return run;
+}
+
+/** @brief The bound @p run's diagnostic gives, or -1 when it gives none. */
+long long boundIn(const SinkChildRun& run) {
+  const std::string LEAD = "vernier::monitor: '" + run.path + "' may be missing up to ";
+  const std::size_t AT = run.said.find(LEAD);
+  return AT == std::string::npos ? -1 : std::stoll(run.said.substr(AT + LEAD.size()));
+}
+
+/** @brief How many times @p text holds @p part. */
+std::size_t occurrences(const std::string& text, const std::string& part) {
+  std::size_t n = 0;
+  for (std::size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + 1)) {
+    ++n;
+  }
+  return n;
+}
+
+} // namespace
+
+/**
+ * @test A file sink that wrote a prefix before a write failed does not call
+ *       the prefix lost. A child process, its file size limited to 8192
+ *       bytes (SIGXFSZ ignored), hands the sink 1000 records: the file holds
+ *       a prefix of complete records and a cut one, counted here from the
+ *       file itself, and the sink's diagnostic gives an upper bound that does
+ *       not contradict them (at least the records not in the file, at most
+ *       all given), never that all of them were not written.
+ */
+TEST(MonitorTest, FileSinkPrefixBeforeAFailureIsNotCalledLost) {
+  const std::string DIR = (std::filesystem::temp_directory_path() /
+                           ("vernier_sink_prefix_" + std::to_string(::getpid())))
+                              .string();
+  std::filesystem::create_directories(DIR);
+  const std::string DATA = DIR + "/records.vmon";
+  const std::string ERR = DIR + "/stderr.txt";
+  const pid_t CHILD = ::fork();
+  ASSERT_GE(CHILD, 0) << std::strerror(errno);
+  if (CHILD == 0) {
+    std::FILE* err = std::fopen(ERR.c_str(), "w");
+    if (err == nullptr || ::dup2(::fileno(err), STDERR_FILENO) < 0) {
+      ::_exit(3);
+    }
+    std::signal(SIGXFSZ, SIG_IGN);
+    struct rlimit limit{8192, 8192};
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    {
+      vernier::monitor::MonitorFileSink sink(DATA);
+      writeSinkRecords(sink);
+    }
+    std::fflush(stderr);
+    ::_exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(::waitpid(CHILD, &status, 0), CHILD);
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << "child status " << status;
+
+  const std::string WRITTEN = fileText(DATA);
+  const std::string SAID = fileText(ERR);
+  std::filesystem::remove_all(DIR);
+  const std::size_t COMPLETE = completeRecords(WRITTEN);
+  EXPECT_GT(COMPLETE, 0U) << "no prefix reached the file";
+  EXPECT_LT(COMPLETE, static_cast<std::size_t>(SINK_RECORDS)) << "the size limit did not bite";
+  EXPECT_LE(WRITTEN.size(), 8192U);
+
+  const std::string LEAD = "vernier::monitor: '" + DATA + "' may be missing up to ";
+  const std::size_t AT = SAID.find(LEAD);
+  ASSERT_NE(AT, std::string::npos) << SAID;
+  const unsigned long long UP_TO = std::stoull(SAID.substr(AT + LEAD.size()));
+  EXPECT_GE(UP_TO, static_cast<unsigned long long>(SINK_RECORDS) - COMPLETE)
+      << "the bound is below what the file lacks:\n"
+      << SAID;
+  EXPECT_LE(UP_TO, static_cast<unsigned long long>(SINK_RECORDS)) << SAID;
+  EXPECT_NE(SAID.find(" of the 1000 records given to it (given after the last write it "
+                      "confirmed, before a write failed)\n"),
+            std::string::npos)
+      << SAID;
+  EXPECT_EQ(SAID.find("were not written"), std::string::npos) << SAID;
+}
+
+/** @test A file sink whose writes all succeed writes every record and says nothing */
+TEST(MonitorTest, FileSinkWritingEveryRecordClaimsNothing) {
+  const std::string DATA = (std::filesystem::temp_directory_path() /
+                            ("vernier_sink_all_" + std::to_string(::getpid()) + ".vmon"))
+                               .string();
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      vernier::monitor::MonitorFileSink sink(DATA);
+      writeSinkRecords(sink);
+    }
+    captured = capture.text();
+  }
+  const std::string WRITTEN = fileText(DATA);
+  std::filesystem::remove(DATA);
+  EXPECT_EQ(completeRecords(WRITTEN), static_cast<std::size_t>(SINK_RECORDS));
+  EXPECT_EQ(captured, "");
+}
+
+/**
+ * @test A file sink none of whose writes can land (/dev/full) reports the
+ *       failure once and, at close, that up to every record given is missing.
+ */
+TEST(MonitorTest, FileSinkWritingNothingBoundsEveryRecord) {
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      vernier::monitor::MonitorFileSink sink("/dev/full");
+      writeSinkRecords(sink);
+    }
+    captured = capture.text();
+  }
+  EXPECT_EQ(captured,
+            "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
+                "\nvernier::monitor: '/dev/full' may be missing up to 1000 of the 1000 records "
+                "given to it (given after the last write it confirmed, before a write failed)\n");
+}
+
+/**
+ * @test A file sink leaves out of its bound the records a flush confirmed. In
+ *       a child whose file size limit holds about 227 records, 100 records
+ *       are written and flushed, then 300 more overrun the limit: the bound is
+ *       at most the 300 given after the flush and at least the records the
+ *       file lacks, counted from the file, and the failure is reported once.
+ */
+TEST(MonitorTest, FileSinkBoundLeavesOutWhatAFlushConfirmed) {
+  const SinkChildRun RUN = runSinkChild(
+      "flushed", {{SinkStep::WRITE, 0, 100}, {SinkStep::FLUSH}, {SinkStep::WRITE, 100, 300}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 100), 0) << "a confirmed record is missing";
+  const int MISSING = missingRecords(RUN.written, 100, 300);
+  EXPECT_GT(MISSING, 0) << "the size limit did not bite";
+  const long long BOUND = boundIn(RUN);
+  EXPECT_LE(BOUND, 300) << "the bound counts records the flush confirmed:\n" << RUN.said;
+  EXPECT_GE(BOUND, MISSING) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, " of the 400 records given to it (given after the last write "
+                                  "it confirmed, before a write failed)\n"),
+            1U)
+      << RUN.said;
+}
+
+/**
+ * @test The same with two confirmed flushes: 100 records flushed, 50 more
+ *       flushed, then 300 that overrun the limit. The bound is at most the
+ *       300 given after the second flush, and at least what the file lacks.
+ */
+TEST(MonitorTest, FileSinkBoundStartsAfterTheLastConfirmedFlush) {
+  const SinkChildRun RUN = runSinkChild("flushed_twice", {{SinkStep::WRITE, 0, 100},
+                                                          {SinkStep::FLUSH},
+                                                          {SinkStep::WRITE, 100, 50},
+                                                          {SinkStep::FLUSH},
+                                                          {SinkStep::WRITE, 150, 300}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 150), 0) << "a confirmed record is missing";
+  const int MISSING = missingRecords(RUN.written, 150, 300);
+  EXPECT_GT(MISSING, 0) << "the size limit did not bite";
+  const long long BOUND = boundIn(RUN);
+  EXPECT_LE(BOUND, 300) << "the bound counts records the second flush confirmed:\n" << RUN.said;
+  EXPECT_GE(BOUND, MISSING) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+}
+
+/**
+ * @test A flush that succeeds after a failure neither hides nor lowers the
+ *       bound. 100 records are flushed, 300 overrun the limit, the limit is
+ *       lifted, and 50 more are written and flushed. What reached the file
+ *       after the cut was written after the lift, so of the 300 only those
+ *       can have been given after the last failure: the bound, still
+ *       reported, is at least the 300 less those, and at most the 300.
+ */
+TEST(MonitorTest, FileSinkLaterSuccessKeepsTheBound) {
+  const SinkChildRun RUN = runSinkChild("recovered", {{SinkStep::WRITE, 0, 100},
+                                                      {SinkStep::FLUSH},
+                                                      {SinkStep::WRITE, 100, 300},
+                                                      {SinkStep::LIFT_LIMIT},
+                                                      {SinkStep::WRITE, 400, 50},
+                                                      {SinkStep::FLUSH}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 100), 0) << "a confirmed record is missing";
+  EXPECT_EQ(recordsFrom(RUN.written, 400, 50, SINK_LIMIT), 50)
+      << "the flush after the lift did not write";
+  EXPECT_GT(missingRecords(RUN.written, 100, 300), 0) << "the size limit did not bite";
+  const int WRITTEN_AFTER_THE_LIFT = recordsFrom(RUN.written, 100, 300, SINK_LIMIT);
+  const long long BOUND = boundIn(RUN);
+  EXPECT_GE(BOUND, 300 - WRITTEN_AFTER_THE_LIFT) << "the later success hid or lowered the bound:\n"
+                                                 << RUN.said;
+  EXPECT_LE(BOUND, 300) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, " of the 450 records given to it"), 1U) << RUN.said;
+}
+
+/** @test A file sink asked for with an empty path says so on stderr when the monitor starts */
+TEST(MonitorTest, EmptyFilePathIsReported) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = "";
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      Monitor mon(cfg);
+      mon.start();
+      mon.increment("event", MonitorTag("empty", 16), 1.0);
+      mon.stop();
+    }
+    captured = capture.text();
+  }
+
+  EXPECT_EQ(captured,
+            "vernier::monitor: SINK_FILE is set and filePath is empty: no file is written\n");
 }
 
 /**
@@ -549,7 +1090,182 @@ TEST(MonitorTest, DisableMidRunKeepsEarlierHistory) {
   std::filesystem::remove(TMP_PATH);
 }
 
-/** @test VERNIER_MONITOR_SCOPE macro compiles and works */
+/** @test Prints a scope, a gauge and a counter row with their cells, then the totals */
+TEST(MonitorTest, SummaryTablePrintsEachKindsCells) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_CONSOLE;
+  cfg.consoleLevel = AlertLevel::WARNING; // no line per sample: the table alone
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("print", 18);
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    mon.recordScope("work", TAG, 0, 1500000);
+    mon.recordScope("work", TAG, 0, 2500000);
+    mon.recordScope("work", TAG, 0, 3500000);
+    mon.gauge("depth", TAG, -5.0);
+    mon.gauge("depth", TAG, -3.0);
+    mon.gauge("depth", TAG, -9.0);
+    mon.increment("events", TAG, 2.0);
+    mon.increment("events", TAG, 3.0);
+    mon.stop();
+    captured = capture.text();
+  }
+
+  // Tag, scope, calls, median, nearest-rank P99, max, breaches; a counter
+  // shows its total under Max.
+  const std::vector<std::string> LINES = collapsedLines(captured);
+  EXPECT_TRUE(hasLine(LINES, "print/18 work 3 2.500 ms 3.500 ms 3.500 ms 0")) << captured;
+  EXPECT_TRUE(hasLine(LINES, "print/18 depth (g) 3 -5.000 -3.000 -3.000 -")) << captured;
+  EXPECT_TRUE(hasLine(LINES, "print/18 events (c) 2 - - 5 -")) << captured;
+  const auto TOTALS = std::find_if(LINES.begin(), LINES.end(), [](const std::string& line) {
+    return line.rfind("Total samples:", 0) == 0;
+  });
+  ASSERT_NE(TOTALS, LINES.end()) << captured;
+  EXPECT_EQ(TOTALS->rfind("Total samples: 8 | Dropped: 0 | Wall time: ", 0), 0u) << *TOTALS;
+}
+
+/** @test Counts every sample in Total samples and the ring buffer's overflow in Dropped */
+TEST(MonitorTest, SummaryCountsTheSamplesTheQueueDropped) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_CONSOLE;
+  cfg.consoleLevel = AlertLevel::WARNING;
+  cfg.queueCapacity = 64;
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("drops", 19);
+  std::string captured;
+  {
+    StderrCapture capture;
+    // Queued before start(), with nothing draining: 64 fit and 36 are dropped.
+    for (int i = 0; i < 100; ++i) {
+      mon.increment("events", TAG, 1.0);
+    }
+    mon.start();
+    mon.stop();
+    captured = capture.text();
+  }
+
+  const std::vector<std::string> LINES = collapsedLines(captured);
+  EXPECT_TRUE(hasLine(LINES, "drops/19 events (c) 64 - - 64 -")) << captured;
+  const auto TOTALS = std::find_if(LINES.begin(), LINES.end(), [](const std::string& line) {
+    return line.rfind("Total samples:", 0) == 0;
+  });
+  ASSERT_NE(TOTALS, LINES.end()) << captured;
+  EXPECT_EQ(TOTALS->rfind("Total samples: 100 | Dropped: 36 | Wall time: ", 0), 0u) << *TOTALS;
+  EXPECT_EQ(mon.queue().droppedCount(), 36u);
+}
+
+/** @test A threshold set before a restart flags after it; one set while stopped, from the next */
+TEST(MonitorTest, ThresholdSetBeforeARestartStillFlagsAfterIt) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_NONE;
+  Monitor mon(cfg);
+  const MonitorTag TAG("restart", 17);
+  mon.setThreshold("work", 17, 1000);
+  mon.start();
+  mon.stop();
+
+  mon.start(); // the same thresholds
+  mon.recordScope("work", TAG, 0, 2000000);
+  mon.recordScope("late", TAG, 0, 2000000);
+  mon.stop();
+
+  mon.setThreshold("late", 17, 1000);
+  mon.start(); // one threshold more
+  mon.recordScope("late", TAG, 0, 2000000);
+  mon.stop();
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto WORK = ENTRIES.find("restart/17::work");
+  ASSERT_NE(WORK, ENTRIES.end());
+  EXPECT_EQ(WORK->second.count, 1u);
+  EXPECT_EQ(WORK->second.breaches, 1u);
+  const auto LATE = ENTRIES.find("restart/17::late");
+  ASSERT_NE(LATE, ENTRIES.end());
+  EXPECT_EQ(LATE->second.count, 2u);
+  EXPECT_EQ(LATE->second.breaches, 1u) << "only the sample after its start() is a breach";
+}
+
+/**
+ * @test Keeps every threshold table a live producer may be reading across restarts
+ *
+ * A producer records 2 ms scopes on "work", the last of nine 1000 us thresholds,
+ * while the main thread starts and stops the monitor, changing that threshold
+ * before each start() so that each start() publishes a new table while the
+ * producer may still be scanning the one before. The producer records through
+ * each start() and pauses for each stop(), whose contract is that producers
+ * have finished. Built with ASan, a table freed under the producer is a
+ * heap-use-after-free; with TSan, a publication without ordering is a data race.
+ * In any build, each sample recorded after the first round, when a table is
+ * published, is a breach, and every sample is either summarized or dropped.
+ */
+TEST(MonitorTest, ThresholdTableSurvivesRestartWithLiveProducer) {
+  constexpr int ROUNDS = 100;
+  constexpr int PAUSE = 0;
+  constexpr int RECORD = 1;
+  constexpr int QUIT = 2;
+  MonitorConfig cfg;
+  cfg.sinks = SINK_NONE;
+  cfg.queueCapacity = 64;
+  Monitor mon(cfg);
+  for (int i = 0; i < 8; ++i) {
+    mon.setThreshold(("stage" + std::to_string(i)).c_str(), 16, 1000);
+  }
+  mon.setThreshold("work", 16, 1000);
+
+  // The main thread sets the phase; the producer acknowledges it once it acts
+  // on it, so a stop() never starts while a sample is being recorded.
+  std::atomic<int> phase{PAUSE};
+  std::atomic<int> acked{PAUSE};
+  std::atomic<int> round{0};
+  std::uint64_t calls = 0; // the producer's until it is joined
+  const MonitorTag FIRST("first", 16);
+  const MonitorTag LATER("later", 16);
+  std::thread producer([&] {
+    for (;;) {
+      const int NOW = phase.load(std::memory_order_acquire);
+      if (NOW == QUIT) {
+        break;
+      }
+      if (NOW == RECORD) {
+        const MonitorTag& tag = round.load(std::memory_order_relaxed) == 0 ? FIRST : LATER;
+        mon.recordScope("work", tag, 0, 2000000);
+        ++calls;
+      }
+      acked.store(NOW, std::memory_order_release);
+    }
+  });
+  const auto setPhase = [&](int next) {
+    phase.store(next, std::memory_order_release);
+    while (acked.load(std::memory_order_acquire) != next) {
+      std::this_thread::yield();
+    }
+  };
+
+  for (int r = 0; r < ROUNDS; ++r) {
+    round.store(r, std::memory_order_relaxed);
+    mon.setThreshold("work", 16, 1000 + static_cast<std::uint64_t>(r % 2));
+    setPhase(RECORD);
+    mon.start();
+    setPhase(PAUSE);
+    mon.stop();
+  }
+  phase.store(QUIT, std::memory_order_release);
+  producer.join();
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto EARLY = ENTRIES.find("first/16::work");
+  const auto LATE = ENTRIES.find("later/16::work");
+  ASSERT_NE(EARLY, ENTRIES.end());
+  ASSERT_NE(LATE, ENTRIES.end());
+  EXPECT_EQ(LATE->second.breaches, LATE->second.count) << "a sample found no threshold";
+  EXPECT_EQ(EARLY->second.count + LATE->second.count + mon.queue().droppedCount(), calls);
+}
+
+/** @test VERNIER_MONITOR_SCOPE times the rest of its scope as one sample */
 TEST(MonitorTest, ScopeMacro) {
   MonitorConfig cfg;
   cfg.sinks = SINK_NONE;
@@ -559,15 +1275,15 @@ TEST(MonitorTest, ScopeMacro) {
   const MonitorTag TAG("macro", 8);
   {
     VERNIER_MONITOR_SCOPE(mon, "stage", TAG);
-    // Simulate work
-    volatile int x = 0;
-    for (int i = 0; i < 100; ++i)
-      x += i;
-    (void)x;
+    // The work the guard times: a sleep lasts at least its 2 ms.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
   mon.stop();
 
-  EXPECT_GE(mon.summary().size(), 1u);
+  EXPECT_EQ(mon.summary().size(), 1u);
+  const auto& ENTRIES = mon.summary().entries();
+  const auto IT = ENTRIES.find("macro/8::stage");
+  ASSERT_NE(IT, ENTRIES.end());
+  EXPECT_EQ(IT->second.count, 1u);
+  EXPECT_GE(IT->second.median(), 2.0); // ms
 }

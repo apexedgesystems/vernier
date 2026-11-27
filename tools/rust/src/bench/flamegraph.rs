@@ -17,16 +17,17 @@ pub struct FlameGraphConfig {
 
 /* ----------------------------- API ----------------------------- */
 
-/// Generate an SVG flamegraph from a perf.data file.
+/// Generate an SVG flamegraph from a perf capture: a perf.data file, or the
+/// directory `perf record --threads` writes, which `perf script -i` reads alike.
 ///
 /// Requires FlameGraph scripts (flamegraph.pl, stackcollapse-perf.pl) to be
 /// available via `$FLAMEGRAPH_DIR`, `~/FlameGraph`, or PATH.
 pub fn generate_flamegraph(cfg: &FlameGraphConfig) -> Result<PathBuf, Error> {
     let fg_dir = find_flamegraph_dir()?;
 
-    if !cfg.input.is_file() {
+    if !is_perf_capture(&cfg.input) {
         return Err(Error::InvalidArgs(format!(
-            "input file not found: {}",
+            "input not found: {} ({CAPTURE_KINDS})",
             cfg.input.display()
         )));
     }
@@ -36,6 +37,16 @@ pub fn generate_flamegraph(cfg: &FlameGraphConfig) -> Result<PathBuf, Error> {
     } else {
         generate_standard(cfg, &fg_dir)
     }
+}
+
+/// What a capture given to `bench flamegraph` may be, for its errors.
+const CAPTURE_KINDS: &str = "a perf.data file, or the directory perf record --threads writes";
+
+/// True when `path` is a perf capture: a file, or a directory holding the
+/// header file `data`, as `perf record --threads` writes one (with a stream
+/// `data.<n>` per CPU beside it).
+fn is_perf_capture(path: &Path) -> bool {
+    path.is_file() || path.join("data").is_file()
 }
 
 /* ----------------------------- Standard FlameGraph ----------------------------- */
@@ -91,9 +102,9 @@ fn generate_differential(
     let difffolded = fg_dir.join("difffolded.pl");
     let flamegraph_pl = fg_dir.join("flamegraph.pl");
 
-    if !baseline.is_file() {
+    if !is_perf_capture(baseline) {
         return Err(Error::InvalidArgs(format!(
-            "baseline file not found: {}",
+            "baseline not found: {} ({CAPTURE_KINDS})",
             baseline.display()
         )));
     }
@@ -223,6 +234,33 @@ fn dirs_from_home(subdir: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// @test A file is a capture; so is a directory holding the header file
+    /// `data`, as perf record --threads writes; a directory without it, and a
+    /// path that does not exist, are not.
+    #[test]
+    fn capture_is_a_file_or_a_threads_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("perf.data");
+        std::fs::write(&file, b"PERFILE2").unwrap();
+        assert!(is_perf_capture(&file));
+
+        let threads = scratch.path().join("threads.data");
+        std::fs::create_dir(&threads).unwrap();
+        assert!(
+            !is_perf_capture(&threads),
+            "a directory without its header file"
+        );
+        std::fs::write(threads.join("data.0"), b"").unwrap();
+        assert!(
+            !is_perf_capture(&threads),
+            "streams without the header file"
+        );
+        std::fs::write(threads.join("data"), b"PERFILE2").unwrap();
+        assert!(is_perf_capture(&threads));
+
+        assert!(!is_perf_capture(&scratch.path().join("missing.data")));
+    }
 
     /// @test Missing input file returns error.
     #[test]

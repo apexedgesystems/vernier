@@ -14,13 +14,12 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::exec::{run_tool, Interrupt, Interrupts, ToolRun, DRAIN};
 use super::parse::{self, Row};
 use super::{ncu_summary_args, COMMAND, NSYS_SUMMARIES};
-use crate::bench::Error;
+use crate::bench::{Error, PrivateDir};
 
 /* ----------------------------- Constants ----------------------------- */
 
@@ -73,12 +72,6 @@ struct Extraction {
     rows: Vec<Row>,
     warnings: Vec<String>,
     errors: Vec<String>,
-}
-
-/// A directory of this process's own, for one report's export, removed when
-/// the export has been read.
-struct PrivateDir {
-    path: Option<PathBuf>,
 }
 
 /* ----------------------------- Helpers ----------------------------- */
@@ -236,55 +229,6 @@ fn signal_of(_status: &std::process::ExitStatus) -> i32 {
     0
 }
 
-impl PrivateDir {
-    /// A new directory under the temporary directory, readable only by this
-    /// user; an existing one is never reused.
-    fn create() -> io::Result<Self> {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let base = std::env::temp_dir();
-        loop {
-            let n = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = base.join(format!("vernier-{COMMAND}-{}-{n}", std::process::id()));
-            match create_private(&path) {
-                Ok(()) => return Ok(Self { path: Some(path) }),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && n < 1000 => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn path(&self) -> &Path {
-        self.path.as_deref().unwrap_or(Path::new(""))
-    }
-
-    /// Remove the directory and what it holds.
-    fn remove(mut self) -> io::Result<()> {
-        match self.path.take() {
-            Some(path) => fs::remove_dir_all(path),
-            None => Ok(()),
-        }
-    }
-}
-
-impl Drop for PrivateDir {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            let _ = fs::remove_dir_all(path);
-        }
-    }
-}
-
-#[cfg(unix)]
-fn create_private(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new().mode(0o700).create(path)
-}
-
-#[cfg(not(unix))]
-fn create_private(path: &Path) -> io::Result<()> {
-    fs::create_dir(path)
-}
-
 /// Export one `.nsys-rep` into a private directory and read every summary of
 /// `NSYS_SUMMARIES` from that export. The report's own directory is not
 /// written.
@@ -294,7 +238,7 @@ fn read_systems(
     interrupts: &Interrupts<'_>,
     out: &mut Extraction,
 ) -> Result<(), Interrupt> {
-    let dir = match PrivateDir::create() {
+    let dir = match PrivateDir::create(COMMAND) {
         Ok(dir) => dir,
         Err(e) => {
             out.errors.push(format!(
@@ -813,24 +757,5 @@ mod tests {
         assert_eq!(file_id(&hard), id);
         assert_ne!(file_id(&copy), id);
         assert_eq!(file_id(&dir.path().join("missing.csv")), None);
-    }
-
-    /// @test The private directory is this user's alone and goes when removed.
-    #[cfg(unix)]
-    #[test]
-    fn private_dir_is_private_and_removed() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = PrivateDir::create().unwrap();
-        let path = dir.path().to_path_buf();
-        fs::write(path.join("profile.sqlite"), "x").unwrap();
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-        let other = PrivateDir::create().unwrap();
-        assert_ne!(other.path(), path);
-        dir.remove().unwrap();
-        assert!(!path.exists());
-        let other_path = other.path().to_path_buf();
-        drop(other);
-        assert!(!other_path.exists());
     }
 }

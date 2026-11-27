@@ -139,16 +139,22 @@ const std::string& testName() const noexcept;
 - If `fn()` throws, the abort hook runs in place of the after hook, nothing
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
-  `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, and the Nsight
-  profiler pops the NVTX range it pushed, so this case and others can capture
-  again
+  `abortMeasure()`, which ends the collection at once, without analysis, so
+  this case and others can collect again: gperf stops its CPU and heap
+  captures, perf stops and renames its output (`stat.aborted.txt`,
+  `<name>.aborted.data`), bpftrace and offcpu stop their tracers and publish
+  no capture, callgrind under a wrap started by hand switches its recording
+  off, and the Nsight profiler pops the NVTX range it pushed
 
 **`contentionRun(worker, label)`**
 
 - Framework spawns `threads()` workers, each calling `worker()` in a loop
 - Use for: Multi-threaded scalability testing
 - Each worker performs `cycles()` operations
+- If a worker throws, or a worker thread cannot be started, the run ends as
+  `measured()` ends when `fn()` throws: the workers started are joined, the
+  abort hook runs, nothing is published, and the first exception reaches you
+  on the calling thread
 
 ### PerfResult
 
@@ -547,7 +553,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures, Nsight pops its range)
+  virtual void abortMeasure() noexcept {} // the measured window threw; each collecting backend ends it (Nsight pops its range)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
@@ -592,6 +598,11 @@ samples, which `--target-time` (or more `--cycles`) avoids.
 perf report -i MyComponent.Throughput.perf/perf.data
 perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
+
+With `--threads` in the `record` flags, perf writes `perf.data` as a
+directory: a header file, `data`, and one stream per CPU, `data.<n>`. The
+backend takes it as it takes the file, and perf's own commands, and `bench
+flamegraph`, read it the same way.
 
 ### ProfilerGperf
 
@@ -878,20 +889,20 @@ a run whose tests pass exits with status 4. See the GPU guide's
 
 ### Profiling Flags
 
-| Flag                     | Type   | Default | Description                                                                                                                                                                                                                                 |
-| ------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                     |
-| `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                         |
-| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
-| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off, and a value that is not a whole number from 0 exits 2. `contentionRun()` and GPU measurements are not covered                 |
-| `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |
-| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
-| `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |
-| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                   |
-| `--profile-frequency N`  | int    | 0       | gperf CPU sampling rate, 1 to 4000 Hz (0: gperftools' 100): `bench run` sets it before the benchmark starts (run directly, set `CPUPROFILE_FREQUENCY=N` too); checked in each profile, see [ProfilerGperf](#profilergperf)                  |
-| `--profile-analyze`      | bool   | false   | Run the requested profile's analysis after profiling: gperf's pprof report in the benchmark; for callgrind, `bench run --profile-analyze` annotates the profile after valgrind has written it                                               |
-| `--bpf LIST`             | string | -       | Scripts to run, comma-separated: a name is `<name>.bt` in the `--bpf-scripts` directory, a name with a `/` a path from the working directory, `.bt` optional; e.g. `write_latency`, `./my_script.bt`                                        |
-| `--bpf-scripts DIR`      | string | -       | Directory `--bpf` looks script names up in: sets `PERF_BPF_SCRIPTS` in the process environment, over an inherited value. Default, or an empty value: `src/bench/bpf/` of the source tree the library was built from                         |
+| Flag                     | Type   | Default | Description                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------ | ------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                                                                                                                                                                            |
+| `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                                                                                                                                                                                |
+| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                                                                                                                                                                          |
+| `--profile-test-timeout` | int    | 300     | Watchdog seconds per measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off; a value not a whole number from 0 exits 2. A timer if eligible (Linux and glibc 2.34+ at build, single-threaded per glibc, a usable signal, the timer set up), else a parked thread. Not `contentionRun()` or GPU runs. [Troubleshooting](TROUBLESHOOTING.md#test-hangs--never-completes) |
+| `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles`                                                                                                                                                        |
+| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                                                                                                                                                                         |
+| `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                                                                                                                                                                          |
+| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                                                                                                                                                                          |
+| `--profile-frequency N`  | int    | 0       | gperf CPU sampling rate, 1 to 4000 Hz (0: gperftools' 100): `bench run` sets it before the benchmark starts (run directly, set `CPUPROFILE_FREQUENCY=N` too); checked in each profile, see [ProfilerGperf](#profilergperf)                                                                                                                                                                         |
+| `--profile-analyze`      | bool   | false   | Run the requested profile's analysis after profiling: gperf's pprof report in the benchmark; for callgrind, `bench run --profile-analyze` annotates the profile after valgrind has written it                                                                                                                                                                                                      |
+| `--bpf LIST`             | string | -       | Scripts to run, comma-separated: a name is `<name>.bt` in the `--bpf-scripts` directory, a name with a `/` a path from the working directory, `.bt` optional; e.g. `write_latency`, `./my_script.bt`                                                                                                                                                                                               |
+| `--bpf-scripts DIR`      | string | -       | Directory `--bpf` looks script names up in: sets `PERF_BPF_SCRIPTS` in the process environment, over an inherited value. Default, or an empty value: `src/bench/bpf/` of the source tree the library was built from                                                                                                                                                                                |
 
 ### GPU-Specific Flags
 
@@ -968,11 +979,15 @@ std::printf("Test run: %s on %s (%s) [%s]\n",
 ### Timing Utilities
 
 ```cpp
-// Get current time in microseconds
+// Get current time in whole microseconds
 double nowUs();
 ```
 
-High-precision wall-clock timing using `std::chrono::high_resolution_clock`.
+Monotonic time from `std::chrono::steady_clock`, cut to whole microseconds,
+so the difference of two readings is off by up to 1 us. The measured loops
+(`measured()`, `throughputLoop()`, `contentionRun()`) and the `--target-time`
+calibration do not use it: they time each repeat with `steady_clock` time
+points, at the clock's own resolution.
 
 ### Statistics
 

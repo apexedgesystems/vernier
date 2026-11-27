@@ -464,6 +464,11 @@ Run straight after `bench run` on this rig, it printed:
 [ perf record: Captured and wrote 1.857 MB ./PerfProfiler.JoinV0.perf/perf.data (9868 samples) ]
 ```
 
+With `--threads` added to the record flags, perf writes `perf.data` as a
+directory instead: a header file, `data`, and a stream per CPU, `data.<n>`.
+The backend checks it as it checks the file, and the commands below read it
+the same way.
+
 Then read the report:
 
 ```bash

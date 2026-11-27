@@ -52,6 +52,7 @@
  *    as the registry does.
  */
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -62,18 +63,11 @@
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp" // base
 
-// Detect availability at compile time
-#if __has_include(<gperftools/profiler.h>)
-#define UB_HAS_GPERF_CPU 1
-#else
-#define UB_HAS_GPERF_CPU 0
-#endif
-
-#if __has_include(<gperftools/heap-profiler.h>) && defined(VERNIER_HAS_TCMALLOC)
-#define UB_HAS_GPERF_HEAP 1
-#else
-#define UB_HAS_GPERF_HEAP 0
-#endif
+// UB_HAS_GPERF_CPU and UB_HAS_GPERF_HEAP (1 or 0) say whether libbench was
+// built with gperftools' CPU profiler and heap profiler. They are compile
+// definitions of the bench target, so every translation unit that uses it
+// reads the library's answer, not what its own include path holds; the
+// class's layout does not depend on them.
 
 namespace vernier {
 namespace bench {
@@ -259,12 +253,8 @@ private:
   bool cpuActive_{false};
   bool heapActive_{false};
 
-#if UB_HAS_GPERF_CPU
   std::string cpuPath_;
-#endif
-#if UB_HAS_GPERF_HEAP
   std::string heapPrefix_;
-#endif
 };
 
 /* --------------------------------- API --------------------------------- */
@@ -278,6 +268,17 @@ private:
  *         cannot run here.
  */
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName);
+
+namespace detail {
+
+/**
+ * @brief sizeof(GperfProfiler) as libbench was compiled. A benchmark may
+ * construct a GperfProfiler itself, in storage its own headers size, through
+ * a constructor libbench runs; the layout tests compare the two.
+ */
+[[nodiscard]] std::size_t gperfProfilerSize() noexcept;
+
+} // namespace detail
 
 } // namespace bench
 } // namespace vernier
