@@ -1,18 +1,28 @@
 # Demo NN: <Tool or Technique>
 
 <!--
-Template for a demo walkthrough. Copy it, fill every section from a real
-run on the reference rig, and delete these comments. Rules:
+Template for a demo walkthrough. Copy it, fill every section from runs, on
+the reference rig, of the code the page ships with, and delete these
+comments. Rules:
 
 - Every command was run as written, on the rig named below, from a
-  Release build. Every output block is pasted from that run, trimmed only
-  where marked with "...".
+  Release build. Every output block is pasted from those runs, trimmed
+  only where marked with "...".
 - Never state a number you did not capture. Round in prose, not in the
   pasted output.
-- State which numbers depend on the rig.
+- State which numbers depend on the rig, and the conditions they were
+  measured under as settings of the run: the clocks locked or left to the
+  governor, the pinned core, other work running.
+- The page explains current use and says nothing of its own making: no
+  date or time of a run, no account of which run or which code a block
+  came from, and none of who ran what or of how the page is kept. Those
+  belong in the notes of the work that captured it.
+- Name in **Tools:** the tools whose output the page shows, at the version
+  their output prints or the rig page records; leave the line out when
+  every block is Vernier's own output.
 - The test must assert the effect it demonstrates, so the walkthrough
-  fails loudly when it stops being true, and something must run it: on
-  the rig before every release, and on the rig's CI lane where one exists.
+  fails loudly when it stops being true. Name the test and the command or
+  `ctest` label that runs it.
 - Give `bench run` the same explicit path Step 1 runs
   (`./build/bin/ptests/<Binary>`). A bare binary name is resolved under
   `build/*/bin/ptests`, which the rig layout (`-B build`) does not match.
@@ -21,7 +31,7 @@ run on the reference rig, and delete these comments. Rules:
 **Reference rig:** [<rig name>](../../docs/rigs/RIG_<NAME>.md)
 **Build:** Release
 **Example:** `<shared example>` (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** <YYYY-MM-DD>, Vernier <version>
+**Tools:** <tool> <version>
 
 ## Overview
 
