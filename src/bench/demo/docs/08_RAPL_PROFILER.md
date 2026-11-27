@@ -2,33 +2,29 @@
 
 **Reference rig:** none. RAPL needs an Intel CPU, and neither reference rig
 has one ([Reference Rigs](../../docs/rigs/README.md)).
-**Captured on:** an x86-64 laptop with an Intel Core Ultra 7 165H, Ubuntu
+**Machine:** an x86-64 laptop with an Intel Core Ultra 7 165H, Ubuntu
 22.04.5, Linux 6.8.0, `intel_pstate` with governor `powersave`, energy
 preference `balance_performance` and power profile `balanced`, on AC power;
-timing pinned to CPU 10, one of its performance cores. It is a development
-machine shared with other work, not a reference: the load average was about
-25 while steps 1 and 2 ran, and 7.51 when the session of steps 3 and 4 began
-([Validate the Energy Steps](#validate-the-energy-steps)).
+timing pinned to CPU 10, one of its performance cores. It is a laptop shared
+with other work, not a reference: steps 1 and 2 with other work running, at a
+load average of about 25; steps 3 and 4 with no build or test running, at
+6.05 to 7.51 ([Validate the Energy Steps](#validate-the-energy-steps)).
 **Build:** Release, on the laptop itself ([Prerequisites](#prerequisites)).
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-10-17 (UTC), steps 1 and 2, as an ordinary user;
-2026-11-14 (UTC), steps 3 and 4, as root. Written for the Vernier 1.0.4
-release from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`.
 
-**The energy steps were captured on this laptop's Intel Core Ultra 7 165H on
-2026-11-14, as root, without dedicated reference-rig qualification.** In that
-capture JoinV0's estimated energy per call was 27.2 to 33.5 times JoinV1's
-over five runs, 32.6 times in the run step 3 shows. JoinV1 does less work
+**The energy steps run as root on this laptop's Intel Core Ultra 7 165H,
+which is not a reference rig.** Over five runs of step 3's command, JoinV0's
+estimated energy per call was 27.2 to 33.5 times JoinV1's, 32.6 times in the
+run step 3 shows. JoinV1 does less work
 ([The Example](#the-example)), so its calls are shorter, and the ratio of the
 estimates is the two versions' time ratio multiplied by the ratio of the
-power the package drew over their windows. One session on one laptop shows
-those ratios, not what another machine gives: measure both versions' time per
+power the package drew over their windows. Five runs on one laptop show those
+ratios, not what another machine gives: measure both versions' time per
 call and power on yours. The joules and watts belong to this package, its
-settings and whatever else ran on it. Steps 1 and 2 are captured as an
+settings and the other work running on it. Steps 1 and 2 are captured as an
 ordinary user: the time per call, and what a run without access does.
-[Validate the Energy Steps](#validate-the-energy-steps) gives the rest of the
-session that captured steps 3 and 4. The page meets the walkthrough contract in
+[Validate the Energy Steps](#validate-the-energy-steps) gives the measurements
+that check steps 3 and 4. The page meets the walkthrough contract in
 [the demo README](../README.md#7-reference-rigs-and-the-demo-contract) only
 in part, and says so where it applies.
 
@@ -124,7 +120,7 @@ PERF_THROUGHPUT(RaplProfiler, JoinV0) {
 
 `RaplProfiler.JoinV1` is the same with `joinV1`. A window of about two
 seconds a case (`--target-time 100ms --repeats 20`) holds some 1,700 of the
-counter's updates: in the session of step 3 the counter changed 429 times in
+counter's updates: on this laptop the counter changed 429 times in
 half a second, four times that in two seconds, a median 1.143 ms apart, close
 to the once a millisecond Intel documents
 ([Validate the Energy Steps](#validate-the-energy-steps)).
@@ -166,7 +162,8 @@ RaplProfiler.JoinV1         4.023    2.8%      248.5K  OK
 ```
 
 JoinV0 takes 122.7 us a call and JoinV1 4.0 us, 30 times less, each with a
-spread of a few percent on this busy machine. Each window is about two
+spread of a few percent with other work running (a load average of about 25).
+Each window is about two
 seconds (903 and 24,450 calls a repeat, 20 repeats). That ratio is what the
 estimates of energy per call in step 3 should follow, unless the package
 draws very different power for the two.
@@ -246,7 +243,8 @@ sudo "$(command -v bench)" run ./build/bin/ptests/BenchDemo_08_RaplProfiler \
   --taskset 10 --profile rapl --target-time 100ms --repeats 20 --csv rapl.csv
 ```
 
-Captured output, the first of five runs of this command in one session:
+Captured output, one of five runs of this command, listed first under
+[Validate the Energy Steps](#validate-the-energy-steps):
 
 ```
 Running: taskset -c 10 ./build/bin/ptests/BenchDemo_08_RaplProfiler --csv rapl.csv --target-time 100ms --repeats 20 --profile rapl
@@ -310,13 +308,14 @@ call. JoinV0's is 4.272 mJ and JoinV1's 0.131 mJ, 32.6 times less
 (110.459 / 3.558); the rest is the package's power, 38.67 W over JoinV0's
 window against 36.73 W over JoinV1's, 1.053 times as much
 (31.0 x 1.053 = 32.6). Both windows drew more than the 32.176 and 29.315 W
-the package drew in the session's two idle windows, before its runs and after
-them ([Validate the Energy Steps](#validate-the-energy-steps)): the estimates
+the package drew with no test running, before and after the five runs
+([Validate the Energy Steps](#validate-the-energy-steps)): the estimates
 include that background draw, and neither is what the calls alone added. Nor
 is an estimate an equal share of the window's energy: the calls' mean time
 can differ from their median, and the window also holds work that is not a
 measured call, so the window's energy divided by its calls can give another
-figure, as it does in the session's fourth run.
+figure, as it does in the fourth run listed under
+[Validate the Energy Steps](#validate-the-energy-steps).
 
 ## Step 4: Read the Report
 
@@ -369,14 +368,14 @@ step 3 shows.
 
 ## What Should Reproduce
 
-| Reading                                   | On this laptop                                                                                                      | Elsewhere                                                                                                              |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| JoinV0 / JoinV1 time per call             | 30x (122.7 / 4.0 us), step 1                                                                                        | same direction; size depends on CPU and allocator                                                                      |
-| the refusal without access                | `denied`, exit status 4, no folder (step 2)                                                                         | the cause of that machine: denied, missing, unsupported                                                                |
-| JoinV0 / JoinV1 estimated energy per call | 32.6x (4.272 / 0.131 mJ), step 3; 27.2x to 33.5x over five runs                                                     | measure both versions' time and power there: the estimates' ratio is their time ratio times their windows' power ratio |
-| joules and watts                          | JoinV0's estimate 4.272 to 4.979 mJ a call, JoinV1's 0.131 to 0.164, at 36.73 to 45.28 W; idle, 32.176 and 29.315 W | depend on the machine, its state and other load on the package                                                         |
+| Reading                                   | On this laptop                                                                                                                      | Elsewhere                                                                                                              |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| JoinV0 / JoinV1 time per call             | 30x (122.7 / 4.0 us), step 1                                                                                                        | same direction; size depends on CPU and allocator                                                                      |
+| the refusal without access                | `denied`, exit status 4, no folder (step 2)                                                                                         | the cause of that machine: denied, missing, unsupported                                                                |
+| JoinV0 / JoinV1 estimated energy per call | 32.6x (4.272 / 0.131 mJ), step 3; 27.2x to 33.5x over five runs                                                                     | measure both versions' time and power there: the estimates' ratio is their time ratio times their windows' power ratio |
+| joules and watts                          | JoinV0's estimate 4.272 to 4.979 mJ a call, JoinV1's 0.131 to 0.164, at 36.73 to 45.28 W; with no test running, 32.176 and 29.315 W | depend on the machine, its state and other load on the package                                                         |
 
-The ranges are the session's five runs of step 3's command, one after
+The ranges are five runs of step 3's command, one after
 another ([Validate the Energy Steps](#validate-the-energy-steps)). They
 describe those runs, not a bound another run has to meet.
 
@@ -392,19 +391,20 @@ describe those runs, not a bound another run has to meet.
 - **`unsupported`**: an ARM board, such as the reference rigs, where the
   backend prints
   `unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here`
-  (its unit test's ARM case; not yet captured on a rig); an AMD CPU names its
+  (the line its unit test holds for an ARM CPU); an AMD CPU names its
   vendor instead. A CPU that does not implement the register is
   `unsupported` too, naming the read that failed.
 - **A counter that did not advance** over a window: the report says so;
   that window measured no energy.
 - **Numbers far from another run's:** other work on the package is in the
-  reading. Measure on a quiet machine, and compare runs of one session.
+  reading. Measure on a quiet machine, and compare runs taken back to back
+  with the same settings.
 
 ## Validate the Energy Steps
 
-Steps 3 and 4 come from one session with access on this laptop, as root, with
-no build or test running. The load average was 7.51 when it began and 6.05
-after its runs (one-minute averages):
+Steps 3 and 4 run with access, as root, on this laptop with no build or test
+running; the one-minute load average read 7.51 before the runs and 6.05 after
+them:
 
 ```
 load average: 7.51 6.42 8.89 5/3902 570853
@@ -412,9 +412,9 @@ load average: 7.51 6.42 8.89 5/3902 570853
 load average: 6.05 6.15 8.65 4/3916 596581
 ```
 
-Outside Vernier, the session read the energy register and the kernel's
-powercap counter side by side over ten idle seconds before its runs and after
-them, read the register's unit, and timed the counter's updates:
+Read outside Vernier, over ten seconds with no test running, before and after
+the runs: the energy register and the kernel's powercap counter side by side;
+then the register's unit, and the times between the counter's updates:
 
 ```
 window: 10.009 s
@@ -532,9 +532,9 @@ JoinV0's estimate at 31.4 times JoinV1's:
 [  PASSED  ] 8 tests.
 ```
 
-With the demo's JoinV1 changed to call `joinV0` and the demo rebuilt, the
-effect test failed its assertion that JoinV1's estimate is at most a third of
-JoinV0's; with the source restored and the demo rebuilt, it passed again:
+With the demo's JoinV1 calling `joinV0`, the effect test fails its assertion
+that JoinV1's estimate is at most a third of JoinV0's; with the demo as
+shipped, it passes:
 
 ```
 [Rapl.EnergyPerCall]  JoinV0 5.048026 mJ/call, JoinV1 5.517446 mJ/call (0.9x)
@@ -567,10 +567,9 @@ Energy per op:       0.015 mJ/call (average power x median call time)
 [profile] --profile rapl failed; the run exits with status 4:
 ```
 
-Last, a copy of the demo beside it, given `cap_sys_rawio=ep` by root and run
-as the ordinary user, loaded its libraries and listed its tests, and its read
-of the counter was refused while the device kept its mode (the session
-changes no device permission):
+A copy of the demo binary with the file capability `cap_sys_rawio=ep`, run as
+the ordinary user with the device at its default mode, loads its libraries and
+lists its tests, and its read of the counter is refused:
 
 ```
 ./build/bin/ptests/BenchDemo_08_RaplProfiler.setcap-check cap_sys_rawio=ep
@@ -583,11 +582,10 @@ RaplProfiler.
 ```
 
 So a file capability alone does not let the user open the device, whose
-mode still refuses it: the access requirement in
-[What is RAPL?](#what-is-rapl) says so, and this session shows it. The
-session gave no ordinary user read permission without the capability, so the
-other half, that the driver checks the capability, rests on the driver's
-code.
+mode still refuses it, as the access requirement in
+[What is RAPL?](#what-is-rapl) says. The other half, that the driver checks
+the capability, rests on the driver's code: no run here gives an ordinary
+user read permission without the capability.
 
 ## What Keeps This Page True
 
@@ -619,7 +617,7 @@ ctest --test-dir build -L rapl
 
 On this laptop, as its ordinary user, `Rapl.EnergyPerCall` skips on the
 `denied` refusal: the effect is checked only where the energy counter can be
-read, which no automatic run here can.
+read: as root, or with the access [What is RAPL?](#what-is-rapl) describes.
 
 ## See Also
 
