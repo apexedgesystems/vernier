@@ -3,8 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-26, written for the Vernier 1.0.4 release; captured from
-the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
+**Tools:** valgrind 3.24.0
 
 ## Overview
 
@@ -99,10 +98,9 @@ CallgrindProfiler.JoinV1        18.949    1.6%       52.8K  OK
 
 V0 takes 1017.2 us per call and V1 18.9 us, 54 times less, against
 repeat-to-repeat spreads (`CV`) of 0.1% and 1.6%. Across seven runs of this
-command in one session on this rig, V0's median ranged from 921.7 to 1017.2 us
-and V1's from 18.9 to 20.9 us, and the ratio from 44.4x to 53.7x. That range
-describes those runs; it is not a bound a run has to meet, and another run can
-land outside it.
+command on this rig, V0's median ranged from 921.7 to 1017.2 us and V1's from
+18.9 to 20.9 us, and the ratio from 44.4x to 53.7x. That range describes those
+runs; it is not a bound a run has to meet, and another run can land outside it.
 
 ## Step 2: Count the Instructions
 
@@ -456,13 +454,13 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo:
+A reference CSV from this rig ships with the demo:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/07_callgrind_profiler.csv run1.csv
 ```
 
-Output, for the captured session's `run1.csv`:
+Captured output, for step 1's `run1.csv`:
 
 ```
 Test                          Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -477,18 +475,18 @@ CallgrindProfiler.JoinV1      20.13480      18.94910    -1.18570     -5.9%      
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference is step 1's command run once more in the same session, in a
-namespace whose host name is `pi4`, so that the CSV's `hostname` column names
-the rig rather than the board. The labels compare each median change with the
-5% threshold: V0's median moved by 2.6%, less than that, so its row is
+The reference is a run of step 1's command by the same binary on this board, in
+a UTS namespace named `pi4`, so its `hostname` column records `pi4` where step
+1's run records the board's host name. The labels compare each median change
+with the 5% threshold: V0's median moved by 2.6%, less than that, so its row is
 `neutral`; V1's moved by 5.9% in the faster direction, more than that, so its
 row reads `IMPROVEMENT`. That is all the label says: the two runs are the same
-binary on the same board, about a minute apart. Both rows moved by more than
-their own spread (the `Base CV` and `Cand CV` columns, 0.1% to 2.1%): a fresh
-process measures a little differently, and over the seven runs V0's median
-moved by 10.4% and V1's by 10.4%, as walkthrough 01 shows at length for its own
-runs. A timing moves between runs; step 4's instruction counts do not, and
-neither do step 5's for the join functions and the allocator.
+binary on the same board. Both rows moved by more than their own spread (the
+`Base CV` and `Cand CV` columns, 0.1% to 2.1%): a fresh process measures a
+little differently, and over the seven runs V0's median moved by 10.4% and V1's
+by 10.4%, as walkthrough 01 shows at length for its own runs. A timing moves
+between runs; step 4's instruction counts do not, and neither do step 5's for
+the join functions and the allocator.
 
 ## What Keeps This Page True
 
@@ -527,9 +525,8 @@ neither do step 5's for the join functions and the allocator.
   `ctest --test-dir build -L demo` runs them with
   `CallgrindDemoInstructionCountsTest`.
 
-The timings of step 1 are not in `ctest`; they are re-run on the rig with the
-commands above before a release, and the reference CSV is re-captured when they
-move.
+The timings of step 1 are not in `ctest`: run them on the rig with the commands
+above.
 
 ## See Also
 
