@@ -12,7 +12,6 @@
 
 #include <unistd.h>
 
-#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -138,24 +137,26 @@ std::string checkedStatuses() {
   return text;
 }
 
-/// The status a report the trap wrote at @p path holds: its decimal status from 0 to 255 and
-/// a newline; nothing for a report that is missing or holds anything else.
-std::optional<int> reportedStatus(const std::string& path) {
+/// The status a report the trap wrote at @p path holds: its decimal status from 0 to 255, without
+/// a leading zero, and a newline; -1 for a report that is missing or holds anything else. Parsed
+/// by hand: a standard library template instantiated here would be exported from libbench as a
+/// weak symbol.
+int reportedStatus(const std::string& path) {
   std::ifstream in(path);
-  std::string text;
-  for (char c = 0; text.size() < 8 && in.get(c);) {
-    text.push_back(c);
+  char text[8] = {};
+  in.read(text, sizeof text);
+  const std::streamsize LENGTH = in.gcount();
+  if (LENGTH < 2 || LENGTH > 4 || text[LENGTH - 1] != '\n' || (LENGTH > 2 && text[0] == '0')) {
+    return -1;
   }
-  if (text.size() < 2 || text.size() > 4 || text.back() != '\n') {
-    return std::nullopt;
+  int value = 0;
+  for (std::streamsize i = 0; i + 1 < LENGTH; ++i) {
+    if (text[i] < '0' || text[i] > '9') {
+      return -1;
+    }
+    value = value * 10 + (text[i] - '0');
   }
-  const std::string DIGITS = text.substr(0, text.size() - 1);
-  if ((DIGITS.size() > 1 && DIGITS.front() == '0') ||
-      !std::all_of(DIGITS.begin(), DIGITS.end(), [](char d) { return d >= '0' && d <= '9'; })) {
-    return std::nullopt;
-  }
-  const int VALUE = std::stoi(DIGITS);
-  return VALUE <= 255 ? std::optional<int>{VALUE} : std::nullopt;
+  return value <= 255 ? value : -1;
 }
 
 /// The program the doctor sets the trap's variables with.
@@ -235,15 +236,15 @@ std::optional<ReadinessResult> shellStatusRefusal(const std::string& tool,
           "heaptrack's status probe did not run to its end: " + command + ": " + PROBE.describe(),
           std::string{"Run heaptrack "} + CHECK.program + " by hand to see why.");
     }
-    const std::optional<int> REPORTED = reportedStatus(REPORT);
+    const int REPORTED = reportedStatus(REPORT);
     if (REPORTED != CHECK.status) {
       return readinessResult(
           ReadinessCause::UNUSABLE,
           dropped +
               ", and the shell that runs it under bash did not report the status of the "
               "program it started (" +
-              CHECK.name + ": " + (REPORTED ? std::to_string(*REPORTED) : "no status") + ", not " +
-              std::to_string(CHECK.status) +
+              CHECK.name + ": " + (REPORTED >= 0 ? std::to_string(REPORTED) : "no status") +
+              ", not " + std::to_string(CHECK.status) +
               "), so whether a benchmark passed under it cannot be known",
           "Use a heaptrack that passes the exit status of the program it runs through, as "
           "heaptrack 1.5.0 does, or run the benchmark under heaptrack by hand and read whether "
