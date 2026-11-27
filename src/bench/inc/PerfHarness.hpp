@@ -690,10 +690,10 @@ captureMetadata(bool cacheMetadata = true) {
   }
   // Magic-static initialization IS the synchronization: the first caller
   // captures under the compiler's init guard, everyone else waits, and
-  // afterwards the tuple is immutable. The previous shape assigned bare
-  // statics behind an unguarded flag, racing whichever worker thread the
-  // GPU harness publishes from against the main thread -- and
-  // captureGitHash() runs a subprocess, so that window was wide.
+  // afterwards the tuple is immutable. The GPU harness publishes from worker
+  // threads as well as from the test's thread, and captureGitHash() runs a
+  // subprocess, so a first capture lasts long enough for a second caller to
+  // arrive during it.
   static const std::tuple<std::string, std::string, std::string> CACHED =
       std::make_tuple(captureGitHash(), captureHostname(), capturePlatform());
   return std::make_tuple(captureTimestamp(), std::get<0>(CACHED), std::get<1>(CACHED),
