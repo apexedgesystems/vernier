@@ -23,6 +23,7 @@
 #include "src/bench/inc/ProfilerRocprof.hpp"
 #include "src/bench/inc/ValgrindTool.hpp"
 #include "src/bench/src/CallgrindRequests.hpp"
+#include "src/bench/src/HeaptrackStatusTrap.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -38,6 +39,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -851,14 +853,16 @@ TEST(HeaptrackCheck, BrokenSilentOrMissingHeaptrack) {
 
 /**
  * @test A heaptrack that exits 0 whatever the program it runs returns, as
- * heaptrack 1.3's script does, is READY: bench run takes the benchmark's exit
- * status from the record the benchmark writes for it, and the row says so,
- * after the probe that shows it.
+ * heaptrack 1.3's script does, is READY where bash, running it with a trap,
+ * reports the status of the program it starts: the doctor runs it so for
+ * /bin/false, /bin/true and a program ended by SIGKILL, and the row says what
+ * those three reported.
  */
-TEST(HeaptrackCheck, StatusDroppedIsReady) {
+TEST(HeaptrackCheck, StatusDroppedIsReadyWhenItsShellReportsIt) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
   const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
   const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
       requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
       dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
@@ -868,10 +872,98 @@ TEST(HeaptrackCheck, StatusDroppedIsReady) {
                 " -o <private directory>/probe /bin/true, which wrote probe.zst); it exits 0 for "
                 "a program that fails (probe: " +
                 TOOL +
-                " -o <private directory>/probe /bin/false), so bench run takes the benchmark's "
-                "exit status from the benchmark, which records it in the wrap's folder "
-                "(exit_status.txt), not from heaptrack");
+                " -o <private directory>/probe /bin/false), so bench run runs it under bash, "
+                "whose trap takes each program's status from the shell that waits on it "
+                "(checked: /bin/false 1, /bin/true 0, a program ended by SIGKILL 137)");
   EXPECT_EQ(RESULT.report.hint, "") << "a READY row's hint";
+  const std::vector<std::string> LINES = dir.logLines("heaptrack ");
+  ASSERT_EQ(LINES.size(), 5U) << dir.log();
+  const auto ENDS_WITH = [](const std::string& line, const std::string& tail) {
+    return line.size() >= tail.size() &&
+           line.compare(line.size() - tail.size(), tail.size(), tail) == 0;
+  };
+  EXPECT_TRUE(ENDS_WITH(LINES[2], " /bin/false")) << LINES[2];
+  EXPECT_TRUE(ENDS_WITH(LINES[3], " /bin/true")) << LINES[3];
+  EXPECT_TRUE(ENDS_WITH(LINES[4], " /bin/sh -c kill -KILL $$")) << LINES[4];
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever its program returns, run by a shell
+ * that does not report that program's status (the script starts it otherwise
+ * than the trap expects), is UNUSABLE: whether a benchmark passed under it
+ * cannot be known. The row names what the probe saw and a heaptrack that
+ * passes the status through.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithoutItsShellsReportIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status-unkeyed"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_EQ(RESULT.report.message,
+            "unusable: heaptrack exits 0 for a program that fails (" + TOOL +
+                " -o <private directory>/probe /bin/false exited 0), and the shell that runs it "
+                "under bash did not report the status of the program it started (/bin/false: no "
+                "status, not 1), so whether a benchmark passed under it cannot be known");
+  EXPECT_NE(RESULT.report.hint.find("as heaptrack 1.5.0 does"), std::string::npos)
+      << RESULT.report.hint;
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever its program returns, run by a shell
+ * that reports a status other than its program's (the script inverts it), is
+ * UNUSABLE, naming the status the shell reported.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithAWrongReportIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  dir.link("/bin/bash", "bash");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status-inverted"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_NE(RESULT.report.message.find("did not report the status of the program it started "
+                                       "(/bin/false: 0, not 1), so whether a benchmark passed "
+                                       "under it cannot be known"),
+            std::string::npos)
+      << RESULT.report.message;
+}
+
+/**
+ * @test Without bash on PATH, a heaptrack that drops its program's status is
+ * UNUSABLE, naming bash.
+ */
+TEST(HeaptrackCheck, StatusDroppedWithoutBashIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_NE(RESULT.report.message.find(
+                "and bash, under which bench run takes each program's status from the shell "
+                "that waits on it, is not on PATH"),
+            std::string::npos)
+      << RESULT.report.message;
+  EXPECT_NE(RESULT.report.hint.find("Install bash"), std::string::npos) << RESULT.report.hint;
+  EXPECT_EQ(dir.logLines("heaptrack ").size(), 2U) << "only the two probes run: " << dir.log();
+}
+
+/**
+ * @test The trap the doctor gives bash is the one bench run gives it, as the
+ * shared fixture holds it.
+ */
+TEST(HeaptrackCheck, StatusTrapIsTheSharedOne) {
+  std::ifstream in(std::string{VERNIER_SHARED_FIXTURE_DIR} + "/heaptrack_status.bash");
+  ASSERT_TRUE(in.is_open()) << "the shared fixture";
+  std::stringstream text;
+  text << in.rdbuf();
+  EXPECT_EQ(text.str(), vernier::bench::heaptrack_status::TRAP);
 }
 
 /** @test With libtcmalloc in the process, the doctor's heaptrack row is a caveat naming it. */

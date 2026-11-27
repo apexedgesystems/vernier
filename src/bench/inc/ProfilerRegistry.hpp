@@ -241,11 +241,6 @@ public:
    * that nothing was profiled, or, under `bench run`'s wrap of that tool, that
    * the wrap still recorded the whole process. PERF_MAIN() and PERF_GPU_MAIN()
    * return its result; a benchmark with its own main() calls it the same way.
-   * Under a wrap that does not pass the benchmark's exit status through
-   * (heaptrack 1.3), bench run asks for that status, and finishRun() records
-   * the status it returns in the wrap's folder (exit_status.txt), where bench
-   * run reads it: a main() of its own that does not call it leaves no record
-   * there, and bench run then fails the run as one whose status is not known.
    */
   int finishRun(const PerfConfig& cfg, int testStatus, int testsRun) const;
 

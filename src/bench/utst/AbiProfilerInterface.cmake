@@ -6,8 +6,7 @@
 # profilers that header code compiled into a benchmark calls through, so a
 # slot added to Profiler changes the interface between the two binaries
 # without changing the size of any struct the check compares. Two small
-# shared libraries stand for libbench's side (the check, PerfAbi.cpp, with
-# the exit status record it keeps for bench run, RunStatusRecord.cpp, and a
+# shared libraries stand for libbench's side (the check, PerfAbi.cpp, and a
 # profiler it builds, AbiProfilerLibrary.cpp): one built from this tree's
 # headers, one from a copy as they were before Profiler had its
 # abortMeasure() slot. One client, built from this tree's headers, is linked
@@ -47,16 +46,13 @@ add_custom_command(
 # ------------------------------------------------------------------------------
 
 add_library(
-  AbiProfilerLibraryCurrent SHARED
-  "${CMAKE_CURRENT_LIST_DIR}/AbiProfilerLibrary.cpp"
-  "${PROJECT_SOURCE_DIR}/src/bench/src/PerfAbi.cpp"
-  "${PROJECT_SOURCE_DIR}/src/bench/src/RunStatusRecord.cpp"
+  AbiProfilerLibraryCurrent SHARED "${CMAKE_CURRENT_LIST_DIR}/AbiProfilerLibrary.cpp"
+                                   "${PROJECT_SOURCE_DIR}/src/bench/src/PerfAbi.cpp"
 )
 add_library(
   AbiProfilerLibraryBeforeSlot SHARED
   "${CMAKE_CURRENT_LIST_DIR}/AbiProfilerLibrary.cpp"
-  "${PROJECT_SOURCE_DIR}/src/bench/src/PerfAbi.cpp"
-  "${PROJECT_SOURCE_DIR}/src/bench/src/RunStatusRecord.cpp" "${_slot_edited_header}"
+  "${PROJECT_SOURCE_DIR}/src/bench/src/PerfAbi.cpp" "${_slot_edited_header}"
 )
 # Ahead of every other include directory, the project root included: the
 # generated copies have to shadow the tree's headers of the same name.

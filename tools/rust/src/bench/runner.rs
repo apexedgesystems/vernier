@@ -17,12 +17,14 @@
 //! a metric the GPU does not report), and for compute-sanitizer it reads the
 //! tool's report to tell the errors the tool found from the benchmark's own
 //! status. Before a heaptrack run it asks heaptrack whether it passes a
-//! program's status through (`heaptrack_drops_status`); when it does not, the
-//! benchmark records its own status for the run (`StatusRecord`), and the run
-//! takes it from that record. jemalloc is wrapped
-//! through the environment instead (`env_wrap_for`): the library preloaded
-//! and its profiling options set, refused before anything starts when the
-//! loader cannot preload it, and its exit dump checked after the run.
+//! program's status through (`heaptrack_drops_status`); when it does not,
+//! heaptrack's script runs under bash, whose trap reports the status of the
+//! program the script starts (`ShellStatus`), once three runs show that it
+//! does, and the run takes the benchmark's status from that report. jemalloc
+//! is wrapped through the environment instead (`env_wrap_for`): the library
+//! preloaded and its profiling options set, refused before anything starts
+//! when the loader cannot preload it, and its exit dump checked after the
+//! run.
 
 use std::ffi::OsString;
 use std::fs;
@@ -156,18 +158,19 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     )?;
 
     // heaptrack's exit status stands for the benchmark's (`benchmark_exit`)
-    // unless this heaptrack drops it: then the benchmark records its own
-    // (`StatusRecord`), and the run takes it from that record.
-    let status_record = match route {
+    // unless this heaptrack drops it: then heaptrack's script runs under
+    // bash, whose trap reports the status of the program the script starts
+    // (`ShellStatus`), and the run takes the benchmark's status from there.
+    let shell_status = match route {
         Some(ref r) if r.program == "heaptrack" && heaptrack_drops_status()? => {
-            let record = StatusRecord::in_folder(&r.dir);
+            let shell = ShellStatus::confirmed()?;
             println!(
                 "[bench] heaptrack does not pass the benchmark's exit status through \
-                 ({HEAPTRACK_PROBE} exited 0): the benchmark records it in {}, and the run \
-                 takes it from there",
-                record.path.display()
+                 ({HEAPTRACK_PROBE} exited 0): it runs under bash, whose trap takes the \
+                 benchmark's status from the shell that waits on it (checked: {})",
+                checked_statuses()
             );
-            Some(record)
+            Some(shell)
         }
         _ => None,
     };
@@ -177,15 +180,12 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     // benchmark runs under its route when it has one, directly otherwise;
     // taskset, if requested, layers on the outside of either.
     if let Some(ref r) = route {
-        let mut stale = r.stale_names();
-        if status_record.is_some() {
-            stale.push(STATUS_RECORD_NAME);
-        }
-        prepare_folder(&r.dir, &stale)?;
+        prepare_folder(&r.dir, &r.stale_names())?;
     }
-    let wrap = route
-        .as_ref()
-        .map(|r| (r.program.to_string(), r.args.clone()));
+    let wrap = route.as_ref().map(|r| match shell_status {
+        Some(ref shell) => shell.wrap(&r.args),
+        None => (r.program.to_string(), r.args.clone()),
+    });
 
     let launch = launch_command(&cfg.binary, &cfg.taskset, &wrap);
     let mut cmd = Command::new(&launch[0]);
@@ -220,16 +220,17 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
             }
         }
     }
-    if let Some(ref record) = status_record {
-        cmd.env(STATUS_TOKEN_VARIABLE, &record.token);
-    }
-    for (k, v) in &startup {
+    let shell_env = shell_status
+        .as_ref()
+        .map(|shell| shell.env_for(&shell.report()))
+        .unwrap_or_default();
+    for (k, v) in shell_env.iter().chain(&startup) {
         cmd.env(k, v);
     }
 
-    let env_prefix = env_wrap
+    let env_prefix = shell_env
         .iter()
-        .flatten()
+        .chain(env_wrap.iter().flatten())
         .chain(startup.iter())
         .map(|(k, v)| format!("{k}={v} "))
         .collect::<String>();
@@ -252,8 +253,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
             )?;
         }
     }
-    match (&status_record, &route) {
-        (Some(record), Some(r)) => record.benchmark_end(
+    match (&shell_status, &route) {
+        (Some(shell), Some(r)) => shell.benchmark_end(
             status,
             &request_text(&r.tool, cfg.profile_args.as_deref()),
             &kept_output(&r.tool, &r.dir, r.outputs),
@@ -759,8 +760,8 @@ pub(crate) fn describe_status(status: ExitStatus) -> String {
 /// For a wrapped run this is the wrap's status: valgrind (memcheck with
 /// `--error-exitcode=0`), taskset and a heaptrack that passes its program's
 /// status through (`heaptrack_drops_status`) pass the benchmark's own status
-/// through. Under a heaptrack that drops it, the benchmark's own record of
-/// its status decides instead (`StatusRecord::benchmark_end`).
+/// through. Under a heaptrack that drops it, the status the shell that waited
+/// on the benchmark reported decides instead (`ShellStatus::benchmark_end`).
 fn benchmark_exit(status: ExitStatus) -> Option<BenchmarkExit> {
     if status.success() {
         return None;
@@ -787,94 +788,224 @@ fn exit_of_code(code: i32) -> Option<BenchmarkExit> {
     }
 }
 
-/* ----------------------------- Status record ----------------------------- */
+/* ----------------------------- heaptrack's shell ----------------------------- */
 
-/// The variable that asks the benchmark for its status record; its value is
-/// the run's token: libbench's `run_status::TOKEN_VARIABLE`.
-const STATUS_TOKEN_VARIABLE: &str = "VERNIER_EXTERNAL_WRAP_STATUS";
+/// The variable that names the file the trap writes the status into:
+/// libbench's `heaptrack_status::STATUS_VARIABLE` (HeaptrackStatusTrap.hpp).
+const HEAPTRACK_STATUS_VARIABLE: &str = "VERNIER_HEAPTRACK_STATUS";
 
-/// The record's name in the wrap's folder: libbench's `run_status::RECORD_NAME`.
-const STATUS_RECORD_NAME: &str = "exit_status.txt";
+/// What bash reads as it starts (BASH_ENV) when heaptrack's script runs under
+/// it: the trap keeps the path `HEAPTRACK_STATUS_VARIABLE` names, removes that
+/// variable and BASH_ENV from what the script starts, and, after the command
+/// that starts the program (`"$client" "$@"` in heaptrack's script), writes
+/// that program's exit status, as the shell that waited on it read it, into
+/// the file. libbench's doctor gives bash the same text
+/// (HeaptrackStatusTrap.hpp); both are held to
+/// tests/fixtures/heaptrack_status.bash.
+const HEAPTRACK_STATUS_TRAP: &str = r#"# bench run and bench doctor give bash this file as BASH_ENV when they run
+# heaptrack's script under it: after the command that starts the program
+# ("$client" "$@"), the trap writes that program's exit status, as the shell
+# that waited on it read it, into the file VERNIER_HEAPTRACK_STATUS names.
+__vernier_status_file=$VERNIER_HEAPTRACK_STATUS
+unset BASH_ENV VERNIER_HEAPTRACK_STATUS
+__vernier_status_next=0
+__vernier_status_trap() {
+  local status=$?
+  if [ "$__vernier_status_next" = 1 ]; then
+    printf '%s\n' "$status" >"$__vernier_status_file"
+    __vernier_status_next=0
+  fi
+  # The command as heaptrack's script writes it, not expanded.
+  # shellcheck disable=SC2016
+  case $BASH_COMMAND in
+  *'"$client" "$@"'*) __vernier_status_next=1 ;;
+  esac
+}
+trap __vernier_status_trap DEBUG
+"#;
 
-/// The most of a record read: a record is one short line.
-const STATUS_RECORD_LIMIT: u64 = 4096;
-
-/// The benchmark's own record of its exit status, asked for when the wrap
-/// does not pass that status through (`heaptrack_drops_status`). The
-/// benchmark is given this run's token in `STATUS_TOKEN_VARIABLE`; libbench
-/// takes it as it loads, so no program the benchmark starts records for the
-/// run, and writes `<token> <status>` into `STATUS_RECORD_NAME` in the wrap's
-/// folder as the run ends (`ProfilerRegistry::finishRun()`, and the ABI check
-/// before it ends the process). A record left in the folder is removed before
-/// the run (`prepare_folder`), and one that names another token is not this
-/// run's.
-struct StatusRecord {
-    /// Where the benchmark writes it.
-    path: PathBuf,
-    /// This run's token.
-    token: String,
+/// One run the shell's report is checked with: the program heaptrack's script
+/// starts, its arguments, the status the report must hold, and the program as
+/// messages name it.
+struct ShellCheck {
+    program: &'static str,
+    args: &'static [&'static str],
+    status: i32,
+    name: &'static str,
 }
 
-/// What a status record says for a run, or why it says nothing.
-#[derive(Debug, PartialEq, Eq)]
-enum Recorded {
-    /// The status the benchmark recorded.
-    Status(i32),
-    /// No record: the benchmark ended before it recorded one.
-    Absent,
-    /// The record could not be read: why.
-    Unreadable(String),
-    /// The record holds no `<token> <status>` line: what it holds.
-    Malformed(String),
-    /// The record names another run's token: that token.
-    Foreign(String),
+/// What fails, what passes, and what a signal ends (128 and SIGKILL's 9, as
+/// a shell reports it).
+const SHELL_CHECKS: [ShellCheck; 3] = [
+    ShellCheck {
+        program: "/bin/false",
+        args: &[],
+        status: 1,
+        name: "/bin/false",
+    },
+    ShellCheck {
+        program: "/bin/true",
+        args: &[],
+        status: 0,
+        name: "/bin/true",
+    },
+    ShellCheck {
+        program: "/bin/sh",
+        args: &["-c", "kill -KILL $$"],
+        status: 137,
+        name: "a program ended by SIGKILL",
+    },
+];
+
+/// The checks as messages name them: "/bin/false 1, /bin/true 0, ...".
+fn checked_statuses() -> String {
+    SHELL_CHECKS
+        .iter()
+        .map(|check| format!("{} {}", check.name, check.status))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-impl StatusRecord {
-    /// The record of a run whose wrap writes into @p dir, with a new token.
-    fn in_folder(dir: &Path) -> Self {
-        StatusRecord {
-            path: dir.join(STATUS_RECORD_NAME),
-            token: run_token(),
-        }
-    }
+/// Where the shell that runs heaptrack's script under bash reports the exit
+/// status of the program the script starts, for a heaptrack that does not
+/// pass that status through (`heaptrack_drops_status`): a private folder of
+/// this run's holds the trap (`HEAPTRACK_STATUS_TRAP`) and the files the trap
+/// writes, and goes with it.
+struct ShellStatus {
+    /// The private folder.
+    folder: PrivateDir,
+    /// heaptrack's script, as PATH finds it: bash runs it by this path.
+    heaptrack: PathBuf,
+}
 
-    /// What the record says now.
-    fn read(&self) -> Recorded {
-        use std::io::Read;
-
-        let mut bytes = Vec::new();
-        let read = fs::File::open(&self.path).and_then(|file| {
-            file.take(STATUS_RECORD_LIMIT + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| ())
-        });
-        match read {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Recorded::Absent,
-            Err(e) => Recorded::Unreadable(e.to_string()),
-            Ok(()) => parse_status_record(&String::from_utf8_lossy(&bytes), &self.token),
-        }
-    }
-
-    /// How the benchmark ended, from its record, for a run whose wrap ended
-    /// as @p wrap: its recorded status, a failure of the wrap itself after a
-    /// benchmark that recorded 0 (a failed collection of @p request), or a run
-    /// whose status is not known, naming why, how the wrap ended and what of
-    /// its output is kept (@p kept).
-    fn benchmark_end(&self, wrap: ExitStatus, request: &str, kept: &str) -> Result<(), Error> {
-        let path = self.path.display();
-        // What the record leaves unknown, the subject's status (@p subject),
-        // why (@p why: empty, or a clause after a colon), how heaptrack
-        // ended and what of its output is kept.
-        let unknown = |what: String, subject: &str, why: &str| {
-            Error::BenchmarkStatusUnknown(format!(
-                "{what}, so whether {subject} passed is not known{why}. heaptrack, which does \
-                 not pass the benchmark's exit status through, {}; {kept}",
-                describe_status(wrap)
+impl ShellStatus {
+    /// The report, set up and confirmed on this host: heaptrack's script runs
+    /// each of `SHELL_CHECKS` under bash with the trap, as owned runs, and
+    /// each report must hold the status the check names. Without bash on
+    /// PATH, or with a report that does not, heaptrack is refused before
+    /// anything is created or started, naming what the check saw and the
+    /// remedy; a check that cannot start or does not end within
+    /// `HEAPTRACK_PROBE_BOUND` is an error.
+    fn confirmed() -> Result<Self, Error> {
+        let refusal = |what: String, remedy: &str| {
+            Error::ToolNotFound(format!(
+                "heaptrack exits 0 for a program that fails ({HEAPTRACK_PROBE} exited 0), and \
+                 {what}. {remedy}; bench doctor <binary> --profile heaptrack checks it"
             ))
         };
-        match self.read() {
-            Recorded::Status(code) => {
+        let passes = "a heaptrack that passes the exit status of the program it runs through, \
+                      as heaptrack 1.5.0 does";
+        if find_in_path("bash").is_none() {
+            return Err(refusal(
+                "bash, under which bench run takes the benchmark's status from the shell that \
+                 waits on it, is not on PATH"
+                    .to_string(),
+                &format!("Install bash, or use {passes}"),
+            ));
+        }
+        let Some(heaptrack) = find_in_path("heaptrack") else {
+            return Err(Error::ToolNotFound("heaptrack is not on PATH".to_string()));
+        };
+        let private = |e: std::io::Error| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("a private folder for the status heaptrack's shell reports: {e}"),
+            ))
+        };
+        let folder = PrivateDir::create("heaptrack-status").map_err(private)?;
+        fs::write(folder.path().join("trap.bash"), HEAPTRACK_STATUS_TRAP).map_err(private)?;
+        let shell = ShellStatus { folder, heaptrack };
+        for (n, check) in SHELL_CHECKS.iter().enumerate() {
+            let report = shell.folder.path().join(format!("check-{n}"));
+            let mut command = Command::new("bash");
+            command
+                .arg(&shell.heaptrack)
+                .arg("-o")
+                .arg(shell.folder.path().join(format!("probe-{n}")))
+                .arg(check.program)
+                .args(check.args)
+                .envs(shell.env_for(&report));
+            let what = format!(
+                "bash {} -o <private folder>/probe {}",
+                shell.heaptrack.display(),
+                std::iter::once(check.program)
+                    .chain(check.args.iter().copied())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            match run_owned(&mut command, &what, HEAPTRACK_PROBE_BOUND) {
+                Ok(OwnedEnd::Exited(..)) => {}
+                Ok(OwnedEnd::TimedOut) => {
+                    return Err(Error::ToolNotFound(format!(
+                        "{what} did not end within {} s, so whether the shell that runs \
+                         heaptrack reports the benchmark's exit status is not known",
+                        HEAPTRACK_PROBE_BOUND.as_secs()
+                    )))
+                }
+                Err(OwnedError::Start(e) | OwnedError::Wait(e)) => {
+                    return Err(Error::Io(std::io::Error::new(
+                        e.kind(),
+                        format!("{what}: {e}"),
+                    )))
+                }
+            }
+            let reported = read_reported(&report);
+            if reported != Some(check.status) {
+                return Err(refusal(
+                    format!(
+                        "the shell that runs it under bash did not report the status of the \
+                         program it started ({}: {}, not {}), so whether a benchmark passed \
+                         under it cannot be known",
+                        check.name,
+                        reported.map_or("no status".to_string(), |s| s.to_string()),
+                        check.status
+                    ),
+                    &format!(
+                        "Use {passes}, or run the benchmark under heaptrack by hand and read \
+                         whether it passed in its own output"
+                    ),
+                ));
+            }
+        }
+        Ok(shell)
+    }
+
+    /// The program and arguments that run heaptrack's script under bash with
+    /// @p args, heaptrack's own.
+    fn wrap(&self, args: &[String]) -> (String, Vec<String>) {
+        let mut words = vec![self.heaptrack.display().to_string()];
+        words.extend(args.iter().cloned());
+        ("bash".to_string(), words)
+    }
+
+    /// The environment that has bash read the trap as it starts, and the trap
+    /// write the status into @p report.
+    fn env_for(&self, report: &Path) -> Vec<(String, String)> {
+        vec![
+            (
+                "BASH_ENV".to_string(),
+                self.folder.path().join("trap.bash").display().to_string(),
+            ),
+            (
+                HEAPTRACK_STATUS_VARIABLE.to_string(),
+                report.display().to_string(),
+            ),
+        ]
+    }
+
+    /// Where the trap reports the benchmark's status.
+    fn report(&self) -> PathBuf {
+        self.folder.path().join("status")
+    }
+
+    /// How the benchmark ended, from the status the shell that waited on it
+    /// reported, for a run whose wrap ended as @p wrap: that status, a failure
+    /// of the wrap itself after a benchmark that exited 0 (a failed collection
+    /// of @p request), or, with no report, a run whose status is not known,
+    /// naming how the wrap ended and what of its output is kept (@p kept).
+    fn benchmark_end(&self, wrap: ExitStatus, request: &str, kept: &str) -> Result<(), Error> {
+        match read_reported(&self.report()) {
+            Some(code) => {
                 if let Some(end) = exit_of_code(code) {
                     return Err(Error::Benchmark(end));
                 }
@@ -883,92 +1014,49 @@ impl StatusRecord {
                         request,
                         "collection",
                         format!(
-                            "heaptrack {} after the benchmark recorded status 0 in {path}; \
-                             {kept}",
+                            "heaptrack {} after the benchmark exited with status 0; {kept}",
                             describe_status(wrap)
                         ),
                     ));
                 }
                 Ok(())
             }
-            Recorded::Absent => Err(unknown(
-                format!("the benchmark recorded no exit status in {path}"),
-                "it",
-                ": it ended before ProfilerRegistry::finishRun() returned (a crash, a signal, \
-                 the profile watchdog, an exit of its own), or its main() does not return \
-                 through ProfilerRegistry::finishRun(), as PERF_MAIN() does",
-            )),
-            Recorded::Unreadable(why) => Err(unknown(
-                format!("the exit status record {path} cannot be read ({why})"),
-                "the benchmark",
-                "",
-            )),
-            Recorded::Malformed(text) => Err(unknown(
-                format!(
-                    "the exit status record {path} holds {:?}, not a token and a status",
-                    text.chars().take(80).collect::<String>()
-                ),
-                "the benchmark",
-                "",
-            )),
-            Recorded::Foreign(named) => Err(unknown(
-                format!(
-                    "the exit status record {path} is not this run's: it names run {named}, \
-                     and this run is {}",
-                    self.token
-                ),
-                "the benchmark",
-                "",
-            )),
+            None => Err(Error::BenchmarkStatusUnknown(format!(
+                "the shell that ran the benchmark under heaptrack reported no status for it, so \
+                 whether it passed is not known. heaptrack, which does not pass the benchmark's \
+                 exit status through, {}; {kept}",
+                describe_status(wrap)
+            ))),
         }
     }
 }
 
-/// What a status record's @p text says for the run with @p token: one line,
-/// `<token> <status>` with the status from 0 to 255 in decimal, a newline
-/// after it or not.
-fn parse_status_record(text: &str, token: &str) -> Recorded {
-    let malformed = || Recorded::Malformed(text.to_string());
-    let line = text.strip_suffix('\n').unwrap_or(text);
-    let Some((named, code)) = line.split_once(' ') else {
-        return malformed();
-    };
-    let hex = !named.is_empty() && named.bytes().all(|b| b.is_ascii_hexdigit());
-    let digits = (1..=3).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_digit());
-    let Some(code) = digits
-        .then(|| code.parse::<i32>().ok())
-        .flatten()
-        .filter(|c| (0..=255).contains(c))
-    else {
-        return malformed();
-    };
-    if !hex {
-        return malformed();
-    }
-    if named != token {
-        return Recorded::Foreign(named.to_string());
-    }
-    Recorded::Status(code)
+/// The most of a report read: a status and a newline.
+const REPORT_LIMIT: u64 = 8;
+
+/// The status the report at @p path holds (`parse_reported`), or None for a
+/// report that is missing or unreadable.
+fn read_reported(path: &Path) -> Option<i32> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(REPORT_LIMIT).read_to_end(&mut bytes))
+        .ok()?;
+    parse_reported(&String::from_utf8_lossy(&bytes))
 }
 
-/// A token for one run's status record: 32 hex digits, from hashers the
-/// standard library keys at random, over this process's id and the time.
-fn run_token() -> String {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let half = |part: u8| {
-        let mut hasher = RandomState::new().build_hasher();
-        hasher.write_u128(now);
-        hasher.write_u32(std::process::id());
-        hasher.write_u8(part);
-        hasher.finish()
-    };
-    format!("{:016x}{:016x}", half(0), half(1))
+/// The status a report's @p text holds, as the trap writes it: from 0 to 255
+/// in decimal, without a leading zero, and a newline; None for anything else.
+fn parse_reported(text: &str) -> Option<i32> {
+    let digits = text.strip_suffix('\n')?;
+    let decimal = (1..=3).contains(&digits.len())
+        && digits.bytes().all(|b| b.is_ascii_digit())
+        && (digits.len() == 1 || !digits.starts_with('0'));
+    decimal
+        .then(|| digits.parse::<i32>().ok())
+        .flatten()
+        .filter(|code| (0..=255).contains(code))
 }
 
 /// What a failed run leaves of a wrap's output in @p dir, for its message:
@@ -2359,74 +2447,101 @@ mod tests {
         assert_eq!(PROFILE_FAILED_EXIT_CODE, 4);
     }
 
-    /// @test A status record says the status libbench wrote for this run's
-    /// token, with its newline or without; a well-formed record of another
-    /// token is another run's; anything else is malformed, quoted whole.
+    /// @test The trap bench run gives bash is the one the shared fixture
+    /// holds, which libbench's doctor gives it too.
     #[test]
-    fn status_record_is_read_for_this_runs_token_only() {
-        let token = "0123456789abcdef0123456789abcdef";
-        for (text, code) in [("0", 0), ("1", 1), ("3", 3), ("4", 4), ("255", 255)] {
-            assert_eq!(
-                parse_status_record(&format!("{token} {text}\n"), token),
-                Recorded::Status(code),
-                "{text}"
-            );
-        }
-        assert_eq!(
-            parse_status_record(&format!("{token} 0"), token),
-            Recorded::Status(0)
-        );
-        assert_eq!(
-            parse_status_record("ffff 0\n", token),
-            Recorded::Foreign("ffff".to_string())
-        );
-        for text in [
-            "",
-            "\n",
-            "0\n",
-            "status: 0\n",
-            &format!("{token}\n"),
-            &format!("{token} \n"),
-            &format!("{token} 256\n"),
-            &format!("{token} -1\n"),
-            &format!("{token} 1x\n"),
-            &format!("{token} 0007\n"),
-            &format!("{token}  0\n"),
-            &format!("{token} 0\n\n"),
-            &format!("{token} 0\n{token} 0\n"),
-            &format!("{token}x 0\n"),
-            &format!(" {token} 0\n"),
+    fn heaptrack_status_trap_is_the_shared_one() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/heaptrack_status.bash");
+        let shared = fs::read_to_string(&path).expect("the shared fixture");
+        assert_eq!(HEAPTRACK_STATUS_TRAP, shared);
+    }
+
+    /// Run @p script under bash with the trap, its report going to a file of
+    /// @p dir: the report as written (None when there is none) and stdout.
+    fn under_trap(dir: &Path, script: &str, args: &[&str]) -> (Option<String>, String) {
+        let trap = dir.join("trap.bash");
+        let report = dir.join("status");
+        let file = dir.join("script.sh");
+        fs::write(&trap, HEAPTRACK_STATUS_TRAP).expect("the trap");
+        fs::write(&file, script).expect("the script");
+        let _ = fs::remove_file(&report);
+        let out = Command::new("bash")
+            .arg(&file)
+            .args(args)
+            .env("BASH_ENV", &trap)
+            .env(HEAPTRACK_STATUS_VARIABLE, &report)
+            .output()
+            .expect("bash runs");
+        (
+            fs::read_to_string(&report).ok(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    }
+
+    /// @test Under bash with the trap, a script that starts its program as
+    /// heaptrack's does (`"$client" "$@"`) has the status the shell read for
+    /// it reported: a failure's, a success's, 128 and the signal for a signal's
+    /// end; the program sees neither the trap's variable nor BASH_ENV. A
+    /// program started by another command is not reported.
+    #[test]
+    fn heaptrack_status_trap_reports_the_status_of_the_program_the_script_starts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = "client=\"$1\"\nshift\n\"$client\" \"$@\"\nwait\n";
+        for (args, report) in [
+            (&["/bin/false"][..], "1\n"),
+            (&["/bin/true"][..], "0\n"),
+            (&["/bin/sh", "-c", "exit 3"][..], "3\n"),
+            (&["/bin/sh", "-c", "kill -KILL $$"][..], "137\n"),
+            (&["/bin/sh", "-c", "kill -TERM $$"][..], "143\n"),
         ] {
             assert_eq!(
-                parse_status_record(text, token),
-                Recorded::Malformed(text.to_string()),
-                "{text:?}"
+                under_trap(dir.path(), script, args).0.as_deref(),
+                Some(report),
+                "{args:?}"
             );
+        }
+        let (report, stdout) = under_trap(
+            dir.path(),
+            script,
+            &[
+                "/bin/sh",
+                "-c",
+                "echo \"${BASH_ENV-unset} ${VERNIER_HEAPTRACK_STATUS-unset}\"",
+            ],
+        );
+        assert_eq!(report.as_deref(), Some("0\n"));
+        assert_eq!(stdout, "unset unset\n");
+        let other = "program=\"$1\"\nshift\n\"$program\" \"$@\"\nwait\n";
+        assert_eq!(under_trap(dir.path(), other, &["/bin/false"]).0, None);
+    }
+
+    /// @test A report holds a status as the trap writes it, from 0 to 255 and
+    /// a newline; anything else is no report.
+    #[test]
+    fn shell_status_report_is_a_status_and_a_newline() {
+        for (text, code) in [
+            ("0\n", 0),
+            ("1\n", 1),
+            ("4\n", 4),
+            ("137\n", 137),
+            ("255\n", 255),
+        ] {
+            assert_eq!(parse_reported(text), Some(code), "{text:?}");
+        }
+        for text in [
+            "", "\n", "0", "1", "x\n", "-1\n", "256\n", "1000\n", "01\n", "00\n", " 1\n", "1 \n",
+            "1\n\n", "1\n0\n", "+1\n",
+        ] {
+            assert_eq!(parse_reported(text), None, "{text:?}");
         }
     }
 
-    /// @test Each run's token is 32 hex digits, and no two are the same.
+    /// @test A reported status ends the run as the same exit status would.
     #[test]
-    fn run_tokens_are_hex_and_differ() {
-        let tokens: Vec<String> = (0..64).map(|_| run_token()).collect();
-        for token in &tokens {
-            assert_eq!(token.len(), 32, "{token}");
-            assert!(
-                token
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
-                "{token}"
-            );
-        }
-        let distinct: std::collections::HashSet<&String> = tokens.iter().collect();
-        assert_eq!(distinct.len(), tokens.len(), "{tokens:?}");
-    }
-
-    /// @test A recorded status ends the run as the same exit status would.
-    #[test]
-    fn recorded_status_ends_the_run_as_the_status_would() {
+    fn reported_status_ends_the_run_as_the_status_would() {
         use std::os::unix::process::ExitStatusExt;
-        for code in [0, 1, 2, 3, 4, 127, 255] {
+        for code in [0, 1, 2, 3, 4, 127, 134, 137, 255] {
             assert_eq!(
                 exit_of_code(code),
                 benchmark_exit(ExitStatus::from_raw(code << 8)),

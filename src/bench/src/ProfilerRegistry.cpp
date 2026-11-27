@@ -16,7 +16,6 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
-#include "src/bench/src/RunStatusRecord.hpp"
 
 namespace vernier {
 namespace bench {
@@ -436,9 +435,6 @@ int ProfilerRegistry::finishRun(const PerfConfig& cfg, int testStatus, int tests
     }
   }
   std::fflush(stderr);
-  // Kept for bench run under a wrap that does not pass this status through
-  // (RunStatusRecord.hpp).
-  run_status::record(status);
   return status;
 }
 

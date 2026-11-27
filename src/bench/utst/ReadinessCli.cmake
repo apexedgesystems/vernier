@@ -4,14 +4,14 @@
 # Included from the bench unit-test CMakeLists.txt. ReadinessFixtureTarget is a
 # benchmark with two guarded cases and one case built without the guard;
 # ReadinessCustomMainTarget is a benchmark with its own main(); RunStatusTarget
-# is a program linked with libbench that ends as its argument says, for the
-# exit status record libbench keeps for bench run. The tests run them under a
+# is a program linked with libbench that ends as its argument says, for how
+# bench run reads a benchmark's end under heaptrack. The tests run them under a
 # PATH that holds only fake tools (fixtures/readiness/) and check what the
-# doctor and a run report for the same request, how the run ends, what it
-# records, and what the fakes were asked to do. TestBenchReadinessRun's
-# GoogleTest cases start the fixtures; each ReadinessCli.<Case> runs
-# ReadinessFixtureTarget through ReadinessCli_test.cmake. All are component
-# tests: each runs a benchmark end to end.
+# doctor and a run report for the same request, how the run ends, and what the
+# fakes were asked to do. TestBenchReadinessRun's GoogleTest cases start the
+# fixtures; each ReadinessCli.<Case> runs ReadinessFixtureTarget through
+# ReadinessCli_test.cmake. All are component tests: each runs a benchmark end
+# to end.
 #
 # Targets: ReadinessFixtureTarget, ReadinessCustomMainTarget, RunStatusTarget
 #          (process fixtures with their own main, run only by these tests),
@@ -75,6 +75,9 @@ target_compile_definitions(
           VERNIER_READINESS_FIXTURE_TARGET="$<TARGET_FILE:ReadinessFixtureTarget>"
           VERNIER_READINESS_CUSTOM_MAIN_TARGET="$<TARGET_FILE:ReadinessCustomMainTarget>"
           VERNIER_RUN_STATUS_TARGET="$<TARGET_FILE:RunStatusTarget>"
+          # Where the tools build puts the bench CLI; the case that runs a benchmark through
+          # bench run skips where it is not built.
+          VERNIER_BENCH_CLI="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools/rust/bench"
           VERNIER_READINESS_HEAP_BUILT=$<BOOL:${VERNIER_LINK_TCMALLOC}>
 )
 add_dependencies(

@@ -206,17 +206,12 @@ The `Running:` line is the command `bench run` built. The benchmark's
 heaptrack backend only reports where the recording goes; heaptrack itself
 prints its totals as the process exits, and the last line is `bench run`'s:
 after heaptrack exited, it checks that the recording was written and names
-its size. Under this rig's heaptrack, the recording is the only file the
+its size. The recording is the only file the
 run writes:
 
 ```
 heaptrack-v0/BenchDemo_15_HeaptrackProfiler.heaptrack/run.zst
 ```
-
-Under a heaptrack that does not pass the benchmark's exit status through, as
-heaptrack 1.3's script does, the folder also holds `exit_status.txt`, the
-status the benchmark recorded for `bench run` (see
-[If It Does Not Match](#if-it-does-not-match)).
 
 `allocations: 203965` counts the whole process: the 102 calls of `joinV0`,
 and whatever GoogleTest and the harness allocated around them. The time on
@@ -427,17 +422,19 @@ there has two entries, 997 per call under `joinV0` and 998 under
 
 - **`bench run` says heaptrack does not pass the benchmark's exit status
   through.** heaptrack 1.3's script, Ubuntu 22.04's, exits with its trace
-  compressor's status, not the benchmark's, so
-  `heaptrack -o <private folder>/probe /bin/false` exits 0 under it, which
-  `bench run` checks before each run. The benchmark then records its own
-  status in the folder, as `exit_status.txt`, and `bench run` takes the run's
-  result from that record; the doctor's heaptrack row says so. A benchmark
-  that ends before it records its status (a crash, a kill, the profile
-  watchdog), or whose own `main()` does not return through
-  `ProfilerRegistry::finishRun()`, fails the run with
-  `the benchmark recorded no exit status in <folder>/exit_status.txt`, its
-  recording kept. heaptrack 1.5 (Ubuntu 24.04's, and this rig's) passes the
-  status through, and the folder holds the recording alone.
+  compressor's status, not the benchmark's, which `bench run` finds before
+  each run. It then runs heaptrack's script under bash, whose trap takes the
+  benchmark's status from the shell that waits on it, once three runs show
+  the trap reports a failure, a success and a kill; the doctor's heaptrack
+  row runs the same checks. The benchmark's status then decides the run as
+  under heaptrack 1.5: a benchmark that fails, crashes or is killed, also
+  after its tests passed, fails it with the status that shell saw, such as
+  `the benchmark exited with status 134` for an abort, after a line of
+  bash's own that names heaptrack's script and the command it started the
+  benchmark with. Without bash, or where its report is not right,
+  `bench run` refuses heaptrack before anything starts. heaptrack 1.5
+  (Ubuntu 24.04's, and this rig's) passes the status through and runs as
+  above.
 
 - **The counts do not divide into a whole number per call.** The run made a
   different number of calls: one for the check, the warmup (one call by

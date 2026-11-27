@@ -1089,18 +1089,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   libbench does. **Action needed:** rebuild benchmarks against these headers
   (`BENCH_ABI_VERSION` is 8).
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
-- `bench run --profile heaptrack` takes the benchmark's exit status from the
-  benchmark under a heaptrack that does not pass it through, as heaptrack 1.3's
-  script does (it exits with its trace compressor's status), instead of
-  reporting a failed benchmark as a capture. A probe before each run
-  (`heaptrack -o <private folder>/probe /bin/false`) decides: under such a
-  heaptrack, libbench records the status in the wrap's folder as
-  `exit_status.txt`, and a run whose record is missing, unreadable or another
-  run's fails, naming the record, with heaptrack's trace kept. Under heaptrack
-  1.5 nothing changes. The doctor's heaptrack row says where the status comes
-  from. **Action needed:** a benchmark with its own `main()` returns
-  `ProfilerRegistry::finishRun()`'s status, as `PERF_MAIN()` does, to pass
-  `bench run --profile heaptrack` under heaptrack 1.3.
+- Under heaptrack 1.3, `bench run --profile heaptrack` fails a run whose
+  benchmark failed or crashed, with the benchmark's exit status, instead of
+  reporting the run as a capture.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28

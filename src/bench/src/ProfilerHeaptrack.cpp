@@ -12,6 +12,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -24,6 +25,7 @@
 #include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/inc/ValgrindTool.hpp"
+#include "src/bench/src/HeaptrackStatusTrap.hpp"
 
 namespace vernier {
 namespace bench {
@@ -106,12 +108,160 @@ StatusProbe probeStatus(const std::string& tool, const ReadinessContext& ctx) {
   return status;
 }
 
+/// One run the shell's report of a program's status is checked with: the program heaptrack's
+/// script starts, its arguments, the status the report must hold, and the program as the row
+/// names it.
+struct ShellCheck {
+  const char* program;
+  std::vector<std::string> args;
+  int status;
+  const char* name;
+};
+
+/// What fails, what passes, and what a signal ends (128 and SIGKILL's 9, as a shell reports it).
+const std::vector<ShellCheck>& shellChecks() {
+  static const std::vector<ShellCheck> CHECKS = {
+      {"/bin/false", {}, 1, "/bin/false"},
+      {"/bin/true", {}, 0, "/bin/true"},
+      {"/bin/sh", {"-c", "kill -KILL $$"}, 137, "a program ended by SIGKILL"},
+  };
+  return CHECKS;
+}
+
+/// The checks as the row names them: "/bin/false 1, /bin/true 0, ...".
+std::string checkedStatuses() {
+  std::string text;
+  for (const ShellCheck& CHECK : shellChecks()) {
+    text +=
+        (text.empty() ? "" : ", ") + std::string{CHECK.name} + " " + std::to_string(CHECK.status);
+  }
+  return text;
+}
+
+/// The status a report the trap wrote at @p path holds: its decimal status from 0 to 255 and
+/// a newline; nothing for a report that is missing or holds anything else.
+std::optional<int> reportedStatus(const std::string& path) {
+  std::ifstream in(path);
+  std::string text;
+  for (char c = 0; text.size() < 8 && in.get(c);) {
+    text.push_back(c);
+  }
+  if (text.size() < 2 || text.size() > 4 || text.back() != '\n') {
+    return std::nullopt;
+  }
+  const std::string DIGITS = text.substr(0, text.size() - 1);
+  if ((DIGITS.size() > 1 && DIGITS.front() == '0') ||
+      !std::all_of(DIGITS.begin(), DIGITS.end(), [](char d) { return d >= '0' && d <= '9'; })) {
+    return std::nullopt;
+  }
+  const int VALUE = std::stoi(DIGITS);
+  return VALUE <= 255 ? std::optional<int>{VALUE} : std::nullopt;
+}
+
+/// The program the doctor sets the trap's variables with.
+constexpr const char* ENV_PROGRAM = "/usr/bin/env";
+
+/**
+ * @brief Whether bash, running @p tool's script with bench run's trap
+ * (HeaptrackStatusTrap.hpp), reports the status of the program the script
+ * starts, for a heaptrack that drops it (@p dropped says what its status probe
+ * found): each of shellChecks() runs so into a private directory, and its
+ * report must hold the check's status. Nothing when every report does;
+ * otherwise the row: UNUSABLE naming the first program whose report differed
+ * or bash missing, MISSING_HELPER for a program the checks run, or the probe's
+ * own failure.
+ */
+std::optional<ReadinessResult> shellStatusRefusal(const std::string& tool,
+                                                  const std::string& dropped,
+                                                  const ReadinessContext& ctx) {
+  const std::string PASSES = "use a heaptrack that passes the exit status of the program it runs "
+                             "through, as heaptrack 1.5.0 does";
+  const auto BASH = resolveExecutable("bash", ctx);
+  if (!BASH || !BASH->executable) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           dropped + ", and bash, under which bench run takes each program's "
+                                     "status from the shell that waits on it, is not on PATH",
+                           "Install bash, or " + PASSES + ".");
+  }
+  for (const char* HELPER : {ENV_PROGRAM, "/bin/sh"}) {
+    const auto FOUND = resolveExecutable(HELPER, ctx);
+    if (!FOUND || !FOUND->executable) {
+      return readinessResult(ReadinessCause::MISSING_HELPER,
+                             std::string{HELPER} +
+                                 ", which heaptrack's status probe runs, is missing",
+                             std::string{"Restore "} + HELPER + ".");
+    }
+  }
+  const ProbeScratch SCRATCH(ctx);
+  if (!SCRATCH.ok()) {
+    return readinessResult(ReadinessCause::INTERNAL,
+                           "no private directory could be created for heaptrack's status probe",
+                           "Check that TMPDIR (or /tmp) is writable.");
+  }
+  const std::string TRAP_FILE = SCRATCH.path() + "/trap.bash";
+  std::ofstream trap(TRAP_FILE);
+  trap << heaptrack_status::TRAP;
+  trap.close();
+  if (!trap) {
+    return readinessResult(ReadinessCause::INTERNAL,
+                           "the trap of heaptrack's status probe could not be written into its "
+                           "private directory",
+                           "Check that TMPDIR (or /tmp) is writable.");
+  }
+  std::size_t n = 0;
+  for (const ShellCheck& CHECK : shellChecks()) {
+    const std::string REPORT = SCRATCH.path() + "/check-" + std::to_string(n);
+    std::vector<std::string> argv{ENV_PROGRAM,
+                                  "BASH_ENV=" + TRAP_FILE,
+                                  std::string{heaptrack_status::STATUS_VARIABLE} + "=" + REPORT,
+                                  BASH->path,
+                                  tool,
+                                  "-o",
+                                  SCRATCH.path() + "/probe-" + std::to_string(n),
+                                  CHECK.program};
+    std::string command =
+        BASH->path + " " + tool + " -o <private directory>/probe " + CHECK.program;
+    for (const std::string& ARG : CHECK.args) {
+      argv.push_back(ARG);
+      command += " " + ARG;
+    }
+    const ProbeResult PROBE = runBoundedProbe(argv, HEAPTRACK_PROBE_TIMEOUT_MS, ctx);
+    if (auto unseen = unobservedProbe("heaptrack's status probe, " + command, PROBE)) {
+      return unseen;
+    }
+    if (!PROBE.started || PROBE.timedOut) {
+      return readinessResult(
+          ReadinessCause::UNUSABLE,
+          "heaptrack's status probe did not run to its end: " + command + ": " + PROBE.describe(),
+          std::string{"Run heaptrack "} + CHECK.program + " by hand to see why.");
+    }
+    const std::optional<int> REPORTED = reportedStatus(REPORT);
+    if (REPORTED != CHECK.status) {
+      return readinessResult(
+          ReadinessCause::UNUSABLE,
+          dropped +
+              ", and the shell that runs it under bash did not report the status of the "
+              "program it started (" +
+              CHECK.name + ": " + (REPORTED ? std::to_string(*REPORTED) : "no status") + ", not " +
+              std::to_string(CHECK.status) +
+              "), so whether a benchmark passed under it cannot be known",
+          "Use a heaptrack that passes the exit status of the program it runs through, as "
+          "heaptrack 1.5.0 does, or run the benchmark under heaptrack by hand and read whether "
+          "it passed in its own output.");
+    }
+    ++n;
+  }
+  return std::nullopt;
+}
+
 /**
  * @brief The doctor's probes: heaptrack records /bin/true into a private
  * directory, then runs /bin/false (probeStatus()). A heaptrack that drops the
- * status of the program it runs is READY too: bench run then takes the
- * benchmark's exit status from the benchmark's own record of it, and the row
- * says so.
+ * status of the program it runs is READY where bash, running its script with
+ * bench run's trap, reports the status of the program the script starts
+ * (shellStatusRefusal()): bench run then takes the benchmark's exit status
+ * from that report, and the row says so. Where it does not, the row is the
+ * refusal.
  */
 ReadinessResult probeHeaptrack(const ReadinessContext& ctx) {
   const auto TOOL = resolveExecutable("heaptrack", ctx);
@@ -160,9 +310,16 @@ ReadinessResult probeHeaptrack(const ReadinessContext& ctx) {
       std::string message =
           "heaptrack records /bin/true (probe: " + COMMAND + ", which wrote probe" + SUFFIX + ")";
       if (STATUS.dropsStatus) {
+        if (auto refusal = shellStatusRefusal(TOOL->path,
+                                              "heaptrack exits 0 for a program that fails (" +
+                                                  STATUS.command + " exited 0)",
+                                              ctx)) {
+          return *refusal;
+        }
         message += "; it exits 0 for a program that fails (probe: " + STATUS.command +
-                   "), so bench run takes the benchmark's exit status from the benchmark, which "
-                   "records it in the wrap's folder (exit_status.txt), not from heaptrack";
+                   "), so bench run runs it under bash, whose trap takes each program's status "
+                   "from the shell that waits on it (checked: " +
+                   checkedStatuses() + ")";
       }
       return readinessResult(ReadinessCause::READY, message, "");
     }

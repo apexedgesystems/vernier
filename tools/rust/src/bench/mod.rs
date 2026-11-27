@@ -142,9 +142,8 @@ pub enum Error {
     /// a benchmark that did not end normally under the tool.
     Sanitizer(SanitizerFailure),
     /// The benchmark ran under a wrap that does not pass its exit status
-    /// through, and its own record of that status is missing, unreadable or
-    /// another run's, so whether it passed is not known; the cause names
-    /// itself.
+    /// through, and the shell that waited on it reported no status for it, so
+    /// whether it passed is not known; the cause names itself.
     BenchmarkStatusUnknown(String),
     /// `bench profile-all`: these of `total` profile runs failed.
     ProfileAll {
@@ -391,8 +390,8 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
 
 /// A directory of this process's own under the temporary directory, for a
 /// tool's output that only this process reads: an Nsight report's export,
-/// heaptrack's probe. It is removed, with what it holds, by `remove` or when
-/// dropped.
+/// heaptrack's probe, the status heaptrack's shell reports. It is removed,
+/// with what it holds, by `remove` or when dropped.
 pub(crate) struct PrivateDir {
     path: Option<PathBuf>,
 }

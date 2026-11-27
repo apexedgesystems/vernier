@@ -12,9 +12,8 @@
  * decision removed from the environment, and with FAKE_LOG naming the log the
  * fakes append their invocations to. It checks what the doctor and the run
  * print for the same request, the run's exit status, what the run leaves in
- * its working directory, what it records for bench run and what the fakes
- * were asked to do. Every run's command line, exit status and output are
- * printed, so a failure shows them.
+ * its working directory and what the fakes were asked to do. Every run's
+ * command line, exit status and output are printed, so a failure shows them.
  */
 
 #include "src/bench/inc/ProfilerReadiness.hpp"
@@ -53,6 +52,9 @@
 #ifndef VERNIER_RUN_STATUS_TARGET
 #error "VERNIER_RUN_STATUS_TARGET must name the RunStatusTarget binary"
 #endif
+#ifndef VERNIER_BENCH_CLI
+#error "VERNIER_BENCH_CLI must name where the build puts the bench CLI"
+#endif
 #ifndef VERNIER_READINESS_HEAP_BUILT
 #error "VERNIER_READINESS_HEAP_BUILT must be 1 when heap profiling is compiled in, else 0"
 #endif
@@ -73,6 +75,9 @@ constexpr const char* CUSTOM_MAIN = VERNIER_READINESS_CUSTOM_MAIN_TARGET;
 
 /// The program that ends as its first argument says.
 constexpr const char* RUN_STATUS = VERNIER_RUN_STATUS_TARGET;
+
+/// Where the build puts the bench CLI; the file exists only where it builds it.
+constexpr const char* BENCH_CLI = VERNIER_BENCH_CLI;
 
 /// Heap profiling is compiled into libbench (VERNIER_LINK_TCMALLOC=ON).
 constexpr bool HEAP_BUILT = VERNIER_READINESS_HEAP_BUILT != 0;
@@ -106,21 +111,11 @@ constexpr const char* PERF_STAT =
 const std::vector<std::string> QUICK = {"--cycles", "50", "--repeats", "2", "--warmup", "0"};
 
 /// Settings removed from a run's environment, so the test alone decides.
-const std::vector<std::string> UNSET = {"BENCH_SUDO",
-                                        "PERF_BPF",
-                                        "PERF_BPF_SUDO",
-                                        "PERF_BPF_SCRIPTS",
-                                        "PERF_BPF_FMT",
-                                        "PERF_BPF_OUT",
-                                        "VERNIER_EXTERNAL_WRAP",
-                                        "VERNIER_EXTERNAL_WRAP_DIR",
-                                        "VERNIER_EXTERNAL_WRAP_STATUS",
-                                        "FAKE_SUDO_DENY",
-                                        "LD_PRELOAD",
-                                        "MALLOC_CONF",
-                                        "CPUPROFILE_FREQUENCY",
-                                        "CPUPROFILE",
-                                        "CPUPROFILE_REALTIME"};
+const std::vector<std::string> UNSET = {
+    "BENCH_SUDO",     "PERF_BPF",           "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
+    "PERF_BPF_FMT",   "PERF_BPF_OUT",       "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
+    "FAKE_SUDO_DENY", "LD_PRELOAD",         "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
+    "CPUPROFILE",     "CPUPROFILE_REALTIME"};
 
 /// @p args followed by QUICK.
 std::vector<std::string> quick(std::vector<std::string> args) {
@@ -649,115 +644,59 @@ TEST_F(ReadinessFixtureRun, MissingToolFailsTheRun) {
       << "run-end report";
 }
 
-/* -------------------------- The Exit Status Record -------------------------- */
-
-namespace {
-
-/// A token as bench run gives each run whose wrap drops the benchmark's exit status.
-constexpr const char* TOKEN = "0123456789abcdef0123456789abcdef";
-
-/// The record's name in the wrap's folder.
-constexpr const char* RECORD = "exit_status.txt";
-
-/// Every name in @p dir.
-std::vector<std::string> namesIn(const std::string& dir) { return namesEndingWith(dir, ""); }
-
-} // namespace
+/* ----------------------------- bench run Under heaptrack ----------------------------- */
 
 /**
- * @test Asked for the record, as bench run asks a benchmark whose wrap drops
- * its exit status (VERNIER_EXTERNAL_WRAP_STATUS naming the run's token beside
- * VERNIER_EXTERNAL_WRAP_DIR), a benchmark records "<token> <status>" in
- * exit_status.txt in the wrap's folder as its run ends: 0 when its tests
- * pass, 4 for a failed profile request, and the tests' status for a failed
- * test, through PERF_MAIN() and through a main() of its own that returns
- * finishRun(), as the advanced guide shows.
+ * @test bench run reads a real benchmark's end alike under a heaptrack that passes the
+ * benchmark's exit status through, as heaptrack 1.5 does, and under one that exits 0 whatever
+ * its program returns, as heaptrack 1.3's script does, where it takes the status from the shell
+ * that waits on the benchmark. Tests that pass pass the run, its trace reported, and so does a
+ * main() of its own that returns 0 without finishRun(); a failed test, a failed profile, the ABI
+ * check's stop and an abort before finishRun() fail it with their status; so does a benchmark
+ * that returns finishRun()'s 0 and then aborts in a destructor on its way out of main() or in
+ * its static cleanup, or ends there with a status of its own.
  */
-TEST_F(ReadinessFixtureRun, ExitStatusIsRecordedWhenAsked) {
-  const std::string WRAP = work_ + "/wrap";
-  ASSERT_TRUE(std::filesystem::create_directory(WRAP));
-  env_ = {std::string{"VERNIER_EXTERNAL_WRAP_STATUS="} + TOKEN,
-          "VERNIER_EXTERNAL_WRAP_DIR=" + WRAP};
-  const RunResult PASSED = run(quick({}));
-  EXPECT_EQ(PASSED.status, 0) << "exit status, tests that pass";
-  EXPECT_EQ(readText(WRAP + "/" + RECORD), std::string{TOKEN} + " 0\n") << "tests that pass";
+TEST_F(ReadinessFixtureRun, HeaptrackRunEndsAsTheBenchmarkDid) {
   std::error_code ec;
-  std::filesystem::remove(WRAP + "/" + RECORD, ec);
-  const RunResult REFUSED = run(quick({"--profile", "nosuch"}));
-  EXPECT_EQ(REFUSED.status, 4) << "exit status, a failed request";
-  EXPECT_EQ(readText(WRAP + "/" + RECORD), std::string{TOKEN} + " 4\n") << "a failed request";
-  std::filesystem::remove(WRAP + "/" + RECORD, ec);
-  env_.emplace_back("READINESS_FIXTURE_FAIL=1");
-  const RunResult FAILED = run(quick({}), CUSTOM_MAIN);
-  EXPECT_EQ(FAILED.status, 1) << "exit status, a failed test";
-  EXPECT_EQ(readText(WRAP + "/" + RECORD), std::string{TOKEN} + " 1\n") << "a failed test";
-  EXPECT_EQ(namesIn(WRAP), std::vector<std::string>{RECORD}) << "the wrap's folder";
-}
-
-/** @test The ABI check that ends a benchmark records its status, 3, before the process exits. */
-TEST_F(ReadinessFixtureRun, AbiMismatchRecordsItsStatus) {
-  const std::string WRAP = work_ + "/wrap";
-  ASSERT_TRUE(std::filesystem::create_directory(WRAP));
-  env_ = {std::string{"VERNIER_EXTERNAL_WRAP_STATUS="} + TOKEN,
-          "VERNIER_EXTERNAL_WRAP_DIR=" + WRAP};
-  const RunResult RUN = run({"abi"}, RUN_STATUS);
-  EXPECT_EQ(RUN.status, 3) << "exit status";
-  EXPECT_THAT(RUN.err, HasSubstr("[bench] ABI mismatch: ")) << "the check's message";
-  EXPECT_EQ(readText(WRAP + "/" + RECORD), std::string{TOKEN} + " 3\n") << "the record";
-}
-
-/**
- * @test Nothing is recorded unless the run is asked: the wrap's folder without
- * a token, and a token that is not one (hex digits only), leave it empty.
- */
-TEST_F(ReadinessFixtureRun, NothingIsRecordedUnlessAsked) {
-  const std::string WRAP = work_ + "/wrap";
-  ASSERT_TRUE(std::filesystem::create_directory(WRAP));
-  env_ = {"VERNIER_EXTERNAL_WRAP_DIR=" + WRAP};
-  EXPECT_EQ(run(quick({})).status, 0) << "exit status without a token";
-  EXPECT_THAT(namesIn(WRAP), IsEmpty()) << "without a token";
-  env_.emplace_back("VERNIER_EXTERNAL_WRAP_STATUS=not a token");
-  EXPECT_EQ(run(quick({})).status, 0) << "exit status with a token that is not one";
-  EXPECT_THAT(namesIn(WRAP), IsEmpty()) << "with a token that is not one";
-}
-
-/**
- * @test A benchmark that ends without finishRun(), by a crash or by a main()
- * of its own that returns without it, records nothing: no record is not a
- * success.
- */
-TEST_F(ReadinessFixtureRun, AnEndWithoutFinishRunRecordsNothing) {
-  const std::string WRAP = work_ + "/wrap";
-  ASSERT_TRUE(std::filesystem::create_directory(WRAP));
-  env_ = {std::string{"VERNIER_EXTERNAL_WRAP_STATUS="} + TOKEN,
-          "VERNIER_EXTERNAL_WRAP_DIR=" + WRAP};
-  EXPECT_EQ(run({"abort"}, RUN_STATUS).status, -1) << "an abort exits with no status";
-  EXPECT_THAT(namesIn(WRAP), IsEmpty()) << "after an abort";
-  EXPECT_EQ(run({"return", "0"}, RUN_STATUS).status, 0) << "exit status of the main()";
-  EXPECT_THAT(namesIn(WRAP), IsEmpty()) << "after a main() that returns without finishRun()";
-}
-
-/**
- * @test Only the process the token was given to records: libbench takes the
- * token from its environment as it loads, so a program the benchmark starts
- * does not see it, and a child of fork() does not record for its parent.
- */
-TEST_F(ReadinessFixtureRun, OnlyTheProcessGivenTheTokenRecords) {
-  const std::string WRAP = work_ + "/wrap";
-  ASSERT_TRUE(std::filesystem::create_directory(WRAP));
-  env_ = {std::string{"VERNIER_EXTERNAL_WRAP_STATUS="} + TOKEN,
-          "VERNIER_EXTERNAL_WRAP_DIR=" + WRAP};
-  const RunResult OWN = run({"environment"}, RUN_STATUS);
-  EXPECT_EQ(OWN.status, 0) << "exit status";
-  EXPECT_THAT(OWN.out, HasSubstr("token: unset\n")) << "the token in its own environment";
-  EXPECT_EQ(readText(WRAP + "/" + RECORD), std::string{TOKEN} + " 0\n") << "its own record";
-  std::error_code ec;
-  std::filesystem::remove(WRAP + "/" + RECORD, ec);
-  for (const std::string MODE : {"spawn", "fork"}) {
-    const RunResult RUN = run({MODE}, RUN_STATUS);
-    EXPECT_EQ(RUN.status, 9) << MODE << ": exit status";
-    EXPECT_THAT(RUN.out, HasSubstr("child ended with status 7\n")) << MODE << ": the child";
-    EXPECT_THAT(namesIn(WRAP), IsEmpty()) << MODE << ": a record of the child's";
+  const std::filesystem::path CLI = std::filesystem::canonical(BENCH_CLI, ec);
+  if (ec) {
+    GTEST_SKIP() << "the bench CLI is not built (" << BENCH_CLI
+                 << "; VERNIER_BUILD_TOOLS on, with cargo, builds it): this test runs a benchmark "
+                    "through bench run";
+  }
+  dir_.install("fake_heaptrack.sh", "heaptrack");
+  dir_.link("/bin/bash", "bash");
+  const std::string PASSED =
+      "[bench] heaptrack wrote bench-out/RunStatusTarget.heaptrack/run.zst (";
+  const std::string EXITED = "Error: the benchmark exited with status ";
+  struct Ending {
+    std::string mode;   ///< RunStatusTarget's mode.
+    int status;         ///< bench run's exit status.
+    std::string output; ///< What bench run prints, on stdout for a pass, else on stderr.
+  };
+  const std::vector<Ending> ENDINGS = {
+      {"finish 0", 0, PASSED},
+      {"return 0", 0, PASSED},
+      {"finish 1", 1, EXITED + "1\n"},
+      {"finish 0 nosuch", 1,
+       "Error: the requested profile failed (the benchmark's report above says why); the "
+       "benchmark exited with status 4\n"},
+      {"abi", 1, EXITED + "3\n"},
+      {"abort", 1, EXITED + "134\n"},
+      {"finish-abort-local 0", 1, EXITED + "134\n"},
+      {"finish-abort-static 0", 1, EXITED + "134\n"},
+      {"finish-exit-local 5", 1, EXITED + "5\n"},
+      {"finish-exit-late 5", 1, EXITED + "5\n"},
+  };
+  for (const char* HEAPTRACK : {"ok", "drops-status"}) {
+    for (const Ending& ENDING : ENDINGS) {
+      env_ = {std::string{"FAKE_HEAPTRACK_MODE="} + HEAPTRACK,
+              "RUN_STATUS_TARGET_MODE=" + ENDING.mode};
+      const RunResult RUN = run({"run", RUN_STATUS, "--profile", "heaptrack"}, CLI.string());
+      const std::string WHAT = std::string{HEAPTRACK} + ", " + ENDING.mode;
+      EXPECT_EQ(RUN.status, ENDING.status) << WHAT << ": bench run's exit status";
+      EXPECT_THAT(ENDING.status == 0 ? RUN.out : RUN.err, HasSubstr(ENDING.output)) << WHAT;
+    }
   }
 }
 
