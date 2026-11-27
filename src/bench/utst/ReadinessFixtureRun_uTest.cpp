@@ -4,15 +4,16 @@
  * request reports and how it ends.
  *
  * Each test starts ReadinessFixtureTarget (two cases built with the profiler
- * guard and one built without it) or ReadinessCustomMainTarget (a benchmark
- * with its own main()) as a user does, in a working directory of its own,
- * with PATH set to a FakeToolDir that holds only the fakes the test installs
- * (ReadinessFixtures.hpp), with every setting that could change a decision
- * removed from the environment, and with FAKE_LOG naming the log the fakes
- * append their invocations to. It checks what the doctor and the run print
- * for the same request, the run's exit status, what the run leaves in its
- * working directory and what the fakes were asked to do. Every run's command
- * line, exit status and output are printed, so a failure shows them.
+ * guard and one built without it), ReadinessCustomMainTarget (a benchmark
+ * with its own main()) or RunStatusTarget (a program linked with libbench
+ * that ends as its argument says) as a user does, in a working directory of
+ * its own, with PATH set to a FakeToolDir that holds only the fakes the test
+ * installs (ReadinessFixtures.hpp), with every setting that could change a
+ * decision removed from the environment, and with FAKE_LOG naming the log the
+ * fakes append their invocations to. It checks what the doctor and the run
+ * print for the same request, the run's exit status, what the run leaves in
+ * its working directory and what the fakes were asked to do. Every run's
+ * command line, exit status and output are printed, so a failure shows them.
  */
 
 #include "src/bench/inc/ProfilerReadiness.hpp"
@@ -48,6 +49,12 @@
 #ifndef VERNIER_READINESS_CUSTOM_MAIN_TARGET
 #error "VERNIER_READINESS_CUSTOM_MAIN_TARGET must name the ReadinessCustomMainTarget binary"
 #endif
+#ifndef VERNIER_RUN_STATUS_TARGET
+#error "VERNIER_RUN_STATUS_TARGET must name the RunStatusTarget binary"
+#endif
+#ifndef VERNIER_BENCH_CLI
+#error "VERNIER_BENCH_CLI must name where the build puts the bench CLI"
+#endif
 #ifndef VERNIER_READINESS_HEAP_BUILT
 #error "VERNIER_READINESS_HEAP_BUILT must be 1 when heap profiling is compiled in, else 0"
 #endif
@@ -65,6 +72,12 @@ constexpr const char* FIXTURE = VERNIER_READINESS_FIXTURE_TARGET;
 
 /// The benchmark with its own main().
 constexpr const char* CUSTOM_MAIN = VERNIER_READINESS_CUSTOM_MAIN_TARGET;
+
+/// The program that ends as its first argument says.
+constexpr const char* RUN_STATUS = VERNIER_RUN_STATUS_TARGET;
+
+/// Where the build puts the bench CLI; the file exists only where it builds it.
+constexpr const char* BENCH_CLI = VERNIER_BENCH_CLI;
 
 /// Heap profiling is compiled into libbench (VERNIER_LINK_TCMALLOC=ON).
 constexpr bool HEAP_BUILT = VERNIER_READINESS_HEAP_BUILT != 0;
@@ -99,10 +112,10 @@ const std::vector<std::string> QUICK = {"--cycles", "50", "--repeats", "2", "--w
 
 /// Settings removed from a run's environment, so the test alone decides.
 const std::vector<std::string> UNSET = {
-    "BENCH_SUDO",     "PERF_BPF",     "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
-    "PERF_BPF_FMT",   "PERF_BPF_OUT", "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
-    "FAKE_SUDO_DENY", "LD_PRELOAD",   "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
-    "CPUPROFILE"};
+    "BENCH_SUDO",     "PERF_BPF",           "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
+    "PERF_BPF_FMT",   "PERF_BPF_OUT",       "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
+    "FAKE_SUDO_DENY", "LD_PRELOAD",         "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
+    "CPUPROFILE",     "CPUPROFILE_REALTIME"};
 
 /// @p args followed by QUICK.
 std::vector<std::string> quick(std::vector<std::string> args) {
@@ -378,8 +391,9 @@ TEST_F(ReadinessFixtureRun, MassifUnwrappedFails) {
   const std::string MESSAGE = "missing: massif collects only when valgrind's massif runs the "
                               "process, and valgrind does not run this one";
   const std::string HINT =
-      "Wrap it: valgrind --tool=massif --pages-as-heap=yes --massif-out-file=./massif.out "
-      "<this-binary> --profile massif --profile-args pages [...]; or run it with bench run "
+      "Wrap it: valgrind --tool=massif --fair-sched=try --pages-as-heap=yes "
+      "--massif-out-file=./massif.out <this-binary> --profile massif --profile-args pages [...]; "
+      "or run it with bench run "
       "--profile massif --profile-args pages, which wraps it.";
   EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'massif': " + MESSAGE + "\n   " + HINT +
                                  "\n   Nothing is collected for this request"))
@@ -630,6 +644,62 @@ TEST_F(ReadinessFixtureRun, MissingToolFailsTheRun) {
       << "run-end report";
 }
 
+/* ----------------------------- bench run Under heaptrack ----------------------------- */
+
+/**
+ * @test bench run reads a real benchmark's end alike under a heaptrack that passes the
+ * benchmark's exit status through, as heaptrack 1.5 does, and under one that exits 0 whatever
+ * its program returns, as heaptrack 1.3's script does, where it takes the status from the shell
+ * that waits on the benchmark. Tests that pass pass the run, its trace reported, and so does a
+ * main() of its own that returns 0 without finishRun(); a failed test, a failed profile, the ABI
+ * check's stop and an abort before finishRun() fail it with their status; so does a benchmark
+ * that returns finishRun()'s 0 and then aborts in a destructor on its way out of main() or in
+ * its static cleanup, or ends there with a status of its own.
+ */
+TEST_F(ReadinessFixtureRun, HeaptrackRunEndsAsTheBenchmarkDid) {
+  std::error_code ec;
+  const std::filesystem::path CLI = std::filesystem::canonical(BENCH_CLI, ec);
+  if (ec) {
+    GTEST_SKIP() << "the bench CLI is not built (" << BENCH_CLI
+                 << "; VERNIER_BUILD_TOOLS on, with cargo, builds it): this test runs a benchmark "
+                    "through bench run";
+  }
+  dir_.install("fake_heaptrack.sh", "heaptrack");
+  dir_.link("/bin/bash", "bash");
+  const std::string PASSED =
+      "[bench] heaptrack wrote bench-out/RunStatusTarget.heaptrack/run.zst (";
+  const std::string EXITED = "Error: the benchmark exited with status ";
+  struct Ending {
+    std::string mode;   ///< RunStatusTarget's mode.
+    int status;         ///< bench run's exit status.
+    std::string output; ///< What bench run prints, on stdout for a pass, else on stderr.
+  };
+  const std::vector<Ending> ENDINGS = {
+      {"finish 0", 0, PASSED},
+      {"return 0", 0, PASSED},
+      {"finish 1", 1, EXITED + "1\n"},
+      {"finish 0 nosuch", 1,
+       "Error: the requested profile failed (the benchmark's report above says why); the "
+       "benchmark exited with status 4\n"},
+      {"abi", 1, EXITED + "3\n"},
+      {"abort", 1, EXITED + "134\n"},
+      {"finish-abort-local 0", 1, EXITED + "134\n"},
+      {"finish-abort-static 0", 1, EXITED + "134\n"},
+      {"finish-exit-local 5", 1, EXITED + "5\n"},
+      {"finish-exit-late 5", 1, EXITED + "5\n"},
+  };
+  for (const char* HEAPTRACK : {"ok", "drops-status"}) {
+    for (const Ending& ENDING : ENDINGS) {
+      env_ = {std::string{"FAKE_HEAPTRACK_MODE="} + HEAPTRACK,
+              "RUN_STATUS_TARGET_MODE=" + ENDING.mode};
+      const RunResult RUN = run({"run", RUN_STATUS, "--profile", "heaptrack"}, CLI.string());
+      const std::string WHAT = std::string{HEAPTRACK} + ", " + ENDING.mode;
+      EXPECT_EQ(RUN.status, ENDING.status) << WHAT << ": bench run's exit status";
+      EXPECT_THAT(ENDING.status == 0 ? RUN.out : RUN.err, HasSubstr(ENDING.output)) << WHAT;
+    }
+  }
+}
+
 /* --------------------------------- perf --------------------------------- */
 
 /** @test A run whose perf starts and stops reports no failure and exits 0. */
@@ -788,6 +858,26 @@ TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
                                  MESSAGE))
       << "run-end report";
   EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
+
+/**
+ * @test gperftools sampling on the real-time timer (CPUPROFILE_REALTIME=1,
+ * SIGALRM), with the watchdog at its default, over a window of about 0.15 s:
+ * the run exits 0 and gperftools reports samples taken.
+ */
+TEST_F(ReadinessFixtureRun, GperfRealtimeProfileHasSamples) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_REALTIME=1"};
+  const RunResult RUN = run({"--profile", "gperf", "--gtest_filter=ReadinessFixture.First",
+                             "--target-time", "50ms", "--repeats", "3", "--warmup", "0"});
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  std::smatch summary;
+  ASSERT_TRUE(std::regex_search(RUN.err, summary,
+                                std::regex{"PROFILE: interrupts/evictions/bytes = ([0-9]+)/"}))
+      << "gperftools' summary line";
+  EXPECT_GT(std::stoll(summary[1].str()), 0) << "samples taken in the window";
 }
 
 /* --------------------------------- jemalloc --------------------------------- */

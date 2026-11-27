@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -309,6 +310,21 @@ TEST_F(PerfCheckTest, BrokenPerfIsNeverRun) {
             0U)
       << R.report.message;
   EXPECT_NE(R.report.hint.find("linux-tools-$(uname -r)"), std::string::npos);
+  EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
+}
+
+/**
+ * @test A perf whose --version ends by a signal (here SIGUSR1, which leaves no
+ * core dump) is unusable, with the signal named, and is never asked to count:
+ * a probe a signal ends is no success.
+ */
+TEST_F(PerfCheckTest, SignalledVersionProbeIsUnusable) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "signalled"}});
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE) << R.report.message;
+  EXPECT_EQ(R.report.message.rfind(
+                "unusable: " + perf_ + " --version: ended by signal " + std::to_string(SIGUSR1), 0),
+            0U)
+      << R.report.message;
   EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
 }
 

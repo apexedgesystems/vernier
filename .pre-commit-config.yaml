@@ -27,6 +27,8 @@ files: |
      \.gitignore)
   )
 
+# A third_party/<project>/ folder holds another project's files as it released
+# them (src/bench/third_party/README.md): no hook may rewrite them.
 exclude: |
   (?x)^(
     build/|
@@ -42,6 +44,7 @@ exclude: |
     \.pytest_cache/|
     \.ruff_cache/|
     \.cache/|
+    (.*/)?third_party/[^/]+/|
     compile_commands\.json$
   )
 

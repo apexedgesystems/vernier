@@ -63,12 +63,15 @@ inline void cpuRelax() noexcept {
 /* ---------------------------- Clock Utilities ---------------------------- */
 
 /**
- * @brief Current time in microseconds from a monotonic clock.
+ * @brief Current time in whole microseconds from a monotonic clock.
  *
  * Uses steady_clock to ensure measurements aren't affected by system
- * clock adjustments (NTP, daylight savings, etc.).
+ * clock adjustments (NTP, daylight savings, etc.). The reading is cut to
+ * whole microseconds, so the difference of two readings is off by up to
+ * 1 us; the measured loops time their repeats with steady_clock time points
+ * instead.
  *
- * @return Microseconds since epoch (arbitrary reference point)
+ * @return Whole microseconds since the clock's epoch (arbitrary reference point)
  * @note NOT RT-safe (system call).
  */
 inline double nowUs() {
@@ -151,9 +154,8 @@ inline int countLines(const std::string& s) {
  * helgrind sees no ordering in spin-waiting on atomics, so it reports every
  * access to the gate's two flags as a data race. The gate asks libbench to
  * mark those flags unchecked for its lifetime; the threads' own accesses are
- * checked as before. A libbench built without valgrind's helgrind.h, or with
- * NVALGRIND, makes no request (helgrind::requestsBuiltIn() says which), and
- * helgrind then reports the flags.
+ * checked as before. A libbench built with NVALGRIND makes no request
+ * (helgrind::requestsBuiltIn() says so), and helgrind then reports the flags.
  *
  * @note RT-safe (lock-free atomics, spin-wait only).
  */
@@ -192,8 +194,15 @@ public:
    *
    * Spins until all threads have called start(), then sets go flag.
    */
-  void releaseWhenAllReady() noexcept {
-    while (ready_.load(std::memory_order_acquire) < total_) {
+  void releaseWhenAllReady() noexcept { releaseWhenReady(total_); }
+
+  /**
+   * @brief Main thread calls this to release the workers once @p ready of
+   * them have called start(): for a run that started fewer threads than the
+   * gate was made for, which would otherwise wait for the rest forever.
+   */
+  void releaseWhenReady(int ready) noexcept {
+    while (ready_.load(std::memory_order_acquire) < ready) {
       cpuRelax();
     }
     go_.store(true, std::memory_order_release);

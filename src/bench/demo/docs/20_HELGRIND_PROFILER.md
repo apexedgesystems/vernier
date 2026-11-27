@@ -3,12 +3,11 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
-**Captured:** 2026-09-28 (UTC), step 4 and the job section 2026-09-29 (UTC);
-written for the Vernier 1.0.4 release; captured from the development tree at
-project version 1.0.3, whose CLI reported `bench 1.0.3`; valgrind 3.24.0. The
-console output of the two `bench run` steps, the locked step's log, the
-doctor's row and the `--profile-args drd` run come from 2026-10-03 (UTC), a
-later tree at the same version.
+**Captured:** 2026-09-28 (UTC); written for the Vernier 1.0.4 release;
+captured from the development tree at project version 1.0.3, whose CLI
+reported `bench 1.0.3`; valgrind 3.24.0. The doctor's row and the
+`--profile-args drd` run come from 2026-10-03 (UTC), a later tree at the same
+version.
 
 ## Overview
 
@@ -43,14 +42,14 @@ has no order to get wrong: the race is what it shows.
 
 - **Best for:** data races, locks taken in inconsistent orders, misuse of the
   POSIX threads API.
-- **Overhead:** large, and it changes from run to run. Under helgrind,
-  `Helgrind.LockedTotal`'s result line read from 86.1 to 454.4 ms per call
-  over the eight runs of it for this page, step 4's among them, against
-  22.1 us in step 1: thousands of times as long, and five times apart between
-  runs of the same command. Valgrind runs one thread at a time, and its manual
-  warns that runs of the same program can get very different thread
-  scheduling. Run one test at a time under it, with few cycles, and never read
-  its timings as measurements.
+- **Overhead:** large. Under helgrind, `Helgrind.LockedTotal`'s result line
+  read from 13.7 to 14.6 ms per call over eight runs on this rig, step 4's
+  among them, against 22.1 us in step 1: hundreds of times as long. Valgrind
+  runs one thread at a time, and `bench run` asks it for its fair scheduler,
+  which takes the threads in turn. Without it, eight runs read from 77.3 to
+  541.6 ms per call, seven times apart: under valgrind's default scheduler a
+  thread that computes can keep the others waiting. Run one test at a time
+  under it, with few cycles, and never read its timings as measurements.
 - **Not for:** time (perf, gperftools and callgrind, walkthroughs
   [02](02_PERF_PROFILER.md), [03](03_GPERF_PROFILER.md) and
   [07](07_CALLGRIND_PROFILER.md)), where threads block and for how long
@@ -66,7 +65,7 @@ has no order to get wrong: the race is what it shows.
 **In Vernier:** `--profile helgrind` selects the helgrind backend, which does
 not start valgrind itself. `bench run <binary> --profile helgrind` builds the
 wrap and prints it on its first line:
-`valgrind --tool=helgrind --log-file=<dir>/<binary>.helgrind/helgrind.log <binary> --profile helgrind ...`,
+`valgrind --tool=helgrind --fair-sched=try --log-file=<dir>/<binary>.helgrind/helgrind.log <binary> --profile helgrind ...`,
 where `<dir>` is `--profile-output-dir` (`bench-out` when you give none).
 Helgrind writes one log for the whole process, so profile one test per run
 with `--gtest_filter`; no per-test folder is created. Run by hand instead, with
@@ -87,9 +86,8 @@ the log carries the finding. To fail a job on one, run valgrind yourself
   [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
 ```
 
-Vernier's own start gate stays out of the report when Vernier's library was
-built where valgrind's header `helgrind.h` is installed, as this rig's was
-([If It Does Not Match](#if-it-does-not-match)).
+Vernier's own start gate stays out of the report unless Vernier's library was
+built with `NVALGRIND` ([If It Does Not Match](#if-it-does-not-match)).
 
 ## The Example
 
@@ -276,22 +274,22 @@ bench run ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind \
 Captured output:
 
 ```
-Running: valgrind --tool=helgrind --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
+Running: valgrind --tool=helgrind --fair-sched=try --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
 Note: Google Test filter = Helgrind.RacyTotal
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.RacyTotal
-[       OK ] Helgrind.RacyTotal (117 ms)
-[----------] 1 test from Helgrind (127 ms total)
+[       OK ] Helgrind.RacyTotal (118 ms)
+[----------] 1 test from Helgrind (132 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (180 ms total)
+[==========] 1 test from 1 test suite ran. (184 ms total)
 [  PASSED  ] 1 test.
 
 [profile] --profile helgrind: no case that ran was built with the profiler guard; the helgrind wrap still recorded the whole process.
 
-[bench] helgrind wrote helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (7222 bytes)
+[bench] helgrind wrote helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (7166 bytes)
 ```
 
 The `Running:` line is the wrap `bench run` built. The case ran, because
@@ -322,79 +320,79 @@ threads and marked `...`, the vector's template arguments are shortened to
 `std::vector<...>`, and the binary's directory to `...`:
 
 ```
-==178549== Helgrind, a thread error detector
-==178549== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
-==178549== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==178549== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
-==178549== Parent PID: 178548
-==178549==
-==178549== ---Thread-Announcement------------------------------------------
-==178549==
-==178549== Thread #3 was created
-==178549==    at 0x4E0DC03: clone (clone.S:65)
-==178549==    by 0x4DA5A87: create_thread (pthread_create.c:298)
-==178549==    by 0x4DA6587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
-==178549==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
-==178549==    by 0x4A9B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x10F07F: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
+==130978== Helgrind, a thread error detector
+==130978== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
+==130978== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==130978== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
+==130978== Parent PID: 130977
+==130978==
+==130978== ---Thread-Announcement------------------------------------------
+==130978==
+==130978== Thread #3 was created
+==130978==    at 0x4ECDC03: clone (clone.S:65)
+==130978==    by 0x4E65A87: create_thread (pthread_create.c:298)
+==130978==    by 0x4E66587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
+==130978==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
+==130978==    by 0x4B5B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x10FE9B: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
 ...
-==178549==
-==178549== ---Thread-Announcement------------------------------------------
-==178549==
-==178549== Thread #2 was created
-==178549==    at 0x4E0DC03: clone (clone.S:65)
-==178549==    by 0x4DA5A87: create_thread (pthread_create.c:298)
-==178549==    by 0x4DA6587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
-==178549==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
-==178549==    by 0x4A9B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x10F07F: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
+==130978==
+==130978== ---Thread-Announcement------------------------------------------
+==130978==
+==130978== Thread #2 was created
+==130978==    at 0x4ECDC03: clone (clone.S:65)
+==130978==    by 0x4E65A87: create_thread (pthread_create.c:298)
+==130978==    by 0x4E66587: pthread_create@@GLIBC_2.34 (pthread_create.c:841)
+==130978==    by 0x4893743: pthread_create_WRK (hg_intercepts.c:445)
+==130978==    by 0x4B5B667: std::thread::_M_start_thread(std::unique_ptr<std::thread::_State, std::default_delete<std::thread::_State> >, void (*)()) (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x10FE9B: Helgrind_RacyTotal_Test::TestBody() (in .../BenchDemo_14_HelgrindProfiler)
 ...
-==178549==
-==178549== ----------------------------------------------------------------
-==178549==
-==178549== Possible data race during read of size 8 at 0x1FFF000118 by thread #3
-==178549== Locks held: none
-==178549==    at 0x11BC08: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==
-==178549== This conflicts with a previous write of size 8 by thread #2
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==  Address 0x1fff000118 is on thread #1's stack
-==178549==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
-==178549==
-==178549== ----------------------------------------------------------------
-==178549==
-==178549== Possible data race during write of size 8 at 0x1FFF000118 by thread #3
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==
-==178549== This conflicts with a previous write of size 8 by thread #2
-==178549== Locks held: none
-==178549==    at 0x11BC10: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
-==178549==    by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
-==178549==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
-==178549==    by 0x4DA5F37: start_thread (pthread_create.c:448)
-==178549==    by 0x4E0DC2B: thread_start (clone.S:82)
-==178549==  Address 0x1fff000118 is on thread #1's stack
-==178549==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
-==178549==
-==178549==
-==178549== Use --history-level=approx or =none to gain increased speed, at
-==178549== the cost of reduced accuracy of conflicting-access information
-==178549== For lists of detected and suppressed errors, rerun with: -s
-==178549== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)
+==130978==
+==130978== ----------------------------------------------------------------
+==130978==
+==130978== Possible data race during read of size 8 at 0x1FFF000208 by thread #3
+==130978== Locks held: none
+==130978==    at 0x120B68: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==
+==130978== This conflicts with a previous write of size 8 by thread #2
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==  Address 0x1fff000208 is on thread #1's stack
+==130978==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
+==130978==
+==130978== ----------------------------------------------------------------
+==130978==
+==130978== Possible data race during write of size 8 at 0x1FFF000208 by thread #3
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==
+==130978== This conflicts with a previous write of size 8 by thread #2
+==130978== Locks held: none
+==130978==    at 0x120B70: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)
+==130978==    by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)
+==130978==    by 0x489391F: mythread_wrapper (hg_intercepts.c:406)
+==130978==    by 0x4E65F37: start_thread (pthread_create.c:448)
+==130978==    by 0x4ECDC2B: thread_start (clone.S:82)
+==130978==  Address 0x1fff000208 is on thread #1's stack
+==130978==  in frame #5, created by Helgrind_RacyTotal_Test::TestBody() (???:)
+==130978==
+==130978==
+==130978== Use --history-level=approx or =none to gain increased speed, at
+==130978== the cost of reduced accuracy of conflicting-access information
+==130978== For lists of detected and suppressed errors, rerun with: -s
+==130978== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)
 ```
 
 Every line begins with the process id. Helgrind first introduces the threads
@@ -404,12 +402,12 @@ the earlier access it conflicts with:
 | Line                                                                                            | What it says                                                                                                                                                                                     |
 | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Thread #3 was created`, under `---Thread-Announcement---`                                      | helgrind introduces each thread the first time a report names it, with the stack that created it: a `std::thread` started in `Helgrind_RacyTotal_Test::TestBody()`. Thread #1 is the main thread |
-| `Possible data race during read of size 8 at 0x1FFF000118 by thread #3`                         | an eight-byte read, of the `std::size_t` total, that helgrind found nothing ordering against another thread's access                                                                             |
+| `Possible data race during read of size 8 at 0x1FFF000208 by thread #3`                         | an eight-byte read, of the `std::size_t` total, that helgrind found nothing ordering against another thread's access                                                                             |
 | `Locks held: none`                                                                              | the locks thread #3 held when it read: none                                                                                                                                                      |
 | `at ... addJoinedLength(...) (14_HelgrindProfiler_Racy.cpp:21)`                                 | the read, and its source line: `total += joinV1(parts, sep).size();`                                                                                                                             |
-| `by 0x4A9B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)` and the frames below it | the thread's start: a function of the C++ library that valgrind has no name for, helgrind's wrapper, and the C library's thread start                                                            |
+| `by 0x4B5B4DF: ??? (in /usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33)` and the frames below it | the thread's start: a function of the C++ library that valgrind has no name for, helgrind's wrapper, and the C library's thread start                                                            |
 | `This conflicts with a previous write of size 8 by thread #2`                                   | the other access: thread #2's write of the same eight bytes, at the same line, with no lock held either                                                                                          |
-| `Address 0x1fff000118 is on thread #1's stack`                                                  | where the total is: a local variable of the test body, on the main thread's stack                                                                                                                |
+| `Address 0x1fff000208 is on thread #1's stack`                                                  | where the total is: a local variable of the test body, on the main thread's stack                                                                                                                |
 | `Possible data race during write of size 8`                                                     | the second race: thread #3 writing its sum back, against thread #2's write                                                                                                                       |
 | `ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 6 from 2)`                                | two places in the code, the read and the write of line 21, and three races at each; the six suppressed are valgrind's own, not this program's                                                    |
 
@@ -430,11 +428,9 @@ What not to conclude:
   page: under valgrind one thread runs at a time, and no addition was lost.
   Helgrind reports accesses that nothing orders, whether or not a run lost an
   addition to them.
-- **That the addresses mean anything.** `0x11BC08`, `0x1FFF000118` and the
+- **That the addresses mean anything.** `0x120B68`, `0x1FFF000208` and the
   rest belong to this build and this run: runs of the same binary with other
-  arguments put the total at `0x1FFF000298` and `0x1FFF000218`, and the frame
-  number the report gives for it changed between runs of one command,
-  `frame #5` in three and `frame #3` in two.
+  arguments put the total at `0x1FFF0002F8`.
 - **That the line numbers travel.** They are this revision's
   `14_HelgrindProfiler_Racy.cpp`; a build of an edited file names other lines.
   The names travel: `addJoinedLength`, `Locks held: none`, `read of size 8`,
@@ -455,56 +451,55 @@ cat helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log
 Captured output of the run:
 
 ```
-Running: valgrind --tool=helgrind --log-file=helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
+Running: valgrind --tool=helgrind --fair-sched=try --log-file=helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
 Note: Google Test filter = Helgrind.LockedTotal
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.LockedTotal
-[Helgrind.LockedTotal]  166997.750 us/call  CV=0.0%  ~6 calls/s  (p10=166997.750 p90=166997.750 sd=0.000)
-[       OK ] Helgrind.LockedTotal (1651 ms)
-[----------] 1 test from Helgrind (1659 ms total)
+[Helgrind.LockedTotal]  13651.492 us/call  CV=0.0%  ~73 calls/s  (p10=13651.492 p90=13651.492 sd=0.000)
+[       OK ] Helgrind.LockedTotal (510 ms)
+[----------] 1 test from Helgrind (533 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (1714 ms total)
+[==========] 1 test from 1 test suite ran. (587 ms total)
 [  PASSED  ] 1 test.
-[bench] helgrind wrote helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (743 bytes)
+[bench] helgrind wrote helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (731 bytes)
 ```
 
 and of the log:
 
 ```
-==160566== Helgrind, a thread error detector
-==160566== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
-==160566== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==160566== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
-==160566== Parent PID: 160565
-==160566==
-==160566==
-==160566== Use --history-level=approx or =none to gain increased speed, at
-==160566== the cost of reduced accuracy of conflicting-access information
-==160566== For lists of detected and suppressed errors, rerun with: -s
-==160566== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 36 from 8)
+==71079== Helgrind, a thread error detector
+==71079== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
+==71079== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==71079== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
+==71079== Parent PID: 71078
+==71079==
+==71079==
+==71079== Use --history-level=approx or =none to gain increased speed, at
+==71079== the cost of reduced accuracy of conflicting-access information
+==71079== For lists of detected and suppressed errors, rerun with: -s
+==71079== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 33 from 7)
 ```
 
 `ERROR SUMMARY: 0 errors from 0 contexts`: four threads made two calls each
 through the mutex, and helgrind found every access to the total ordered by the
 lock. `--cycles 2 --repeats 1` keeps the run short, and two calls per thread
-are enough for the threads to share the total. The result line, 167.0 ms per
+are enough for the threads to share the total. The result line, 13.7 ms per
 call, is what helgrind costs, not how fast the locked version is.
 
 Helgrind did not report Vernier's own start gate either, which
 `contentionRun` uses to release the threads together. The gate spins on two
 atomic flags, which helgrind cannot see as synchronisation, so while it exists
 it asks Vernier's library to have helgrind leave those two flags unchecked.
-The library makes the request when it was built where valgrind's `helgrind.h`
-is installed, as this rig's was, whatever the benchmark's own build has. The
-rest of the program is checked as before: a race between the workers of a
-contention test is still reported
+The library carries valgrind's `helgrind.h` and makes the request in every
+build, whatever the build machine has installed and whatever the benchmark's
+own build has. The rest of the program is checked as before: a race between
+the workers of a contention test is still reported
 ([What Keeps This Page True](#what-keeps-this-page-true)). A library built
-without that header, or with `NVALGRIND`, makes no request, and the same run
-reports five races in `contentionRun`
-([If It Does Not Match](#if-it-does-not-match)).
+with `NVALGRIND` makes no request, and the same run reports five races in
+`contentionRun` ([If It Does Not Match](#if-it-does-not-match)).
 
 ## Failing a Job on a Race
 
@@ -513,7 +508,7 @@ found. A job that should stop on a race runs valgrind itself, with an exit
 code for errors:
 
 ```bash
-valgrind --tool=helgrind --error-exitcode=1 --log-file=racy.log \
+valgrind --tool=helgrind --fair-sched=try --error-exitcode=1 --log-file=racy.log \
   ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --gtest_filter='Helgrind.RacyTotal'
 echo "exit $?"
 ```
@@ -524,7 +519,7 @@ Note: Google Test filter = Helgrind.RacyTotal
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.RacyTotal
-[       OK ] Helgrind.RacyTotal (121 ms)
+[       OK ] Helgrind.RacyTotal (117 ms)
 [----------] 1 test from Helgrind (131 ms total)
 
 [----------] Global test environment tear-down
@@ -537,7 +532,7 @@ The test passed and valgrind exited 1: the race is in `racy.log`, and the job
 fails. The same on the locked version:
 
 ```bash
-valgrind --tool=helgrind --error-exitcode=1 --log-file=locked.log \
+valgrind --tool=helgrind --fair-sched=try --error-exitcode=1 --log-file=locked.log \
   ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --threads 4 --cycles 2 --repeats 1 \
   --gtest_filter='Helgrind.LockedTotal'
 echo "exit $?"
@@ -549,12 +544,12 @@ Note: Google Test filter = Helgrind.LockedTotal
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.LockedTotal
-[Helgrind.LockedTotal]  95632.375 us/call  CV=0.0%  ~10 calls/s  (p10=95632.375 p90=95632.375 sd=0.000)
-[       OK ] Helgrind.LockedTotal (927 ms)
-[----------] 1 test from Helgrind (935 ms total)
+[Helgrind.LockedTotal]  14587.089 us/call  CV=0.0%  ~69 calls/s  (p10=14587.089 p90=14587.089 sd=0.000)
+[       OK ] Helgrind.LockedTotal (394 ms)
+[----------] 1 test from Helgrind (418 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (989 ms total)
+[==========] 1 test from 1 test suite ran. (470 ms total)
 [  PASSED  ] 1 test.
 exit 0
 ```
@@ -572,7 +567,7 @@ which is 0 in both cases here.
 | the racy case's answer            | right in all eight runs                                                                                                                                          | right on the laptop and in the container too; the case never runs without valgrind                                                                                                                                   |
 | the locked version under helgrind | 0 errors from 0 contexts, in all eight runs of it                                                                                                                | 0 errors on the laptop and in the container too; five races in `contentionRun` where the start gate is not marked                                                                                                    |
 | four threads against one (step 1) | four threads slower per call, 22.1 against 18.9 us, in step 1 and in every run of the session                                                                    | no faster than one thread wherever the lock covers the whole call, since only one call runs at a time; by how much depends on the machine                                                                            |
-| helgrind's cost                   | the locked version 86.1 to 454.4 ms per call over eight runs, against 22.1 us                                                                                    | depends on the machine, and changes from run to run                                                                                                                                                                  |
+| helgrind's cost                   | the locked version 13.7 to 14.6 ms per call over eight runs, against 22.1 us                                                                                     | depends on the machine, and changes from run to run                                                                                                                                                                  |
 | absolute times                    | 22.1 and 18.9 us per call in step 1; 21.7 to 22.5 over twelve runs and 18.9 to 19.2 over six                                                                     | will differ                                                                                                                                                                                                          |
 
 The twelve runs are step 1's command run twelve times in one session on this
@@ -625,12 +620,11 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   and four `read of size 1` by the workers, in
   `vernier::bench::PerfCase::contentionRun` and in the thread function it
   starts. That is Vernier's start gate, unmarked: Vernier's library was built
-  where valgrind's `helgrind.h` was not found, or with `-DNVALGRIND`. On this
-  rig, a library built with `-DNVALGRIND` gave exactly that for step 4's case.
-  Rebuild Vernier where valgrind's headers are installed, without
-  `NVALGRIND`; how the benchmark itself is built does not matter.
+  with `-DNVALGRIND`. On this rig, a library built with `-DNVALGRIND` gave
+  exactly that for step 4's case. Rebuild Vernier without `NVALGRIND`; how the
+  benchmark itself is built does not matter.
   `Helgrind.LockedTotalReportsNothing` skips with such a library, with
-  `this libbench was built without valgrind's helgrind.h, or with NVALGRIND, so contentionRun's start gate is not marked for helgrind and is reported`.
+  `this libbench was built with NVALGRIND, so contentionRun's start gate is not marked for helgrind and is reported`.
 
 - **`Helgrind.FindsTheRace` reports `SKIPPED`, quoting valgrind.** valgrind
   could not read the demo binary: it gave up reading its debug information
@@ -662,7 +656,7 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
 
 - **The log is drd's after `--profile-args drd`.** `bench run` wraps with
   `--tool=drd` then: step 2's command with `--profile-args drd` prints
-  `Running: valgrind --tool=drd --log-file=helgrind-drd/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ...`
+  `Running: valgrind --tool=drd --fair-sched=try --log-file=helgrind-drd/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ...`
   (with `--profile-output-dir helgrind-drd`), and the log opens with
   `drd, a thread error detector`; the folder and the file keep helgrind's
   names. This page uses helgrind only.
@@ -778,10 +772,10 @@ and the demo's check runs with the example's tests under the `demo` label:
 ctest --test-dir build -L demo
 ```
 
-Every test they select should pass, but the probes that race or make an
-error on purpose, which CTest reports as skipped outside valgrind: this page's
-is `StartGateProbe.RacyWorkers`, the racy probe of the harness's test, and
-its skip is the probe working. The demo's timing test is not registered: what it
+Every test they select should pass. The racy probe of the harness's test,
+`StartGateProbe.RacyWorkers`, is not among them: it is compiled into that
+test's program, which runs it under helgrind, and is not registered, since
+outside valgrind it only skips. The demo's timing test is not registered: what it
 measures belongs to the machine it runs on. This repository has no
 continuous-integration lane on the reference board, so before a release the
 page's commands are run on the rig by hand, and the page and its reference CSV

@@ -38,16 +38,16 @@ alias	jemalloc	jemalloc
 alias	rocprof	rocprof
 #
 # route   <--profile>  <--profile-args>  <program>  <arguments>
-route	callgrind	-	valgrind	--tool=callgrind --callgrind-out-file=<dir>/callgrind.out <bin>
-route	massif	-	valgrind	--tool=massif --massif-out-file=<dir>/massif.out <bin>
-route	massif	pages	valgrind	--tool=massif --pages-as-heap=yes --massif-out-file=<dir>/massif.out <bin>
-route	massif	stacks	valgrind	--tool=massif --stacks=yes --massif-out-file=<dir>/massif.out <bin>
-route	memcheck	-	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
-route	memcheck	leak-full	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
-route	memcheck	track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
-route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
-route	helgrind	-	valgrind	--tool=helgrind --log-file=<dir>/helgrind.log <bin>
-route	helgrind	drd	valgrind	--tool=drd --log-file=<dir>/helgrind.log <bin>
+route	callgrind	-	valgrind	--tool=callgrind --fair-sched=try --callgrind-out-file=<dir>/callgrind.out <bin>
+route	massif	-	valgrind	--tool=massif --fair-sched=try --massif-out-file=<dir>/massif.out <bin>
+route	massif	pages	valgrind	--tool=massif --fair-sched=try --pages-as-heap=yes --massif-out-file=<dir>/massif.out <bin>
+route	massif	stacks	valgrind	--tool=massif --fair-sched=try --stacks=yes --massif-out-file=<dir>/massif.out <bin>
+route	memcheck	-	valgrind	--tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full	valgrind	--tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	track-origins	valgrind	--tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	helgrind	-	valgrind	--tool=helgrind --fair-sched=try --log-file=<dir>/helgrind.log <bin>
+route	helgrind	drd	valgrind	--tool=drd --fair-sched=try --log-file=<dir>/helgrind.log <bin>
 route	heaptrack	-	heaptrack	-o <dir>/run <bin>
 route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
 route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>

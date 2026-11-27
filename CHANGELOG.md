@@ -449,7 +449,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `bench summary`, `bench compare` and `bench doctor` say so, and `--analyze`
   is refused under ncu. **Action needed:** measure performance in a run
   without ncu, and rebuild benchmarks against these headers
-  (`BENCH_ABI_VERSION` is 7).
+  (`BENCH_ABI_VERSION` is 8).
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - The CSV tools keep test names as written: `bench summary` and
   `bench compare` name the line a refused row starts on, as an editor counts
@@ -515,9 +515,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - **`contentionRun`'s start gate stays out of helgrind's reports** -- the
   gate that releases a contention test's threads together spins on two atomic
   flags, which helgrind reported as data races whenever it checked a contention
-  test. A libbench built where valgrind's `helgrind.h` is installed asks
-  helgrind to leave them unchecked, so a race-free test reports nothing; one
-  built without the header, or with `NVALGRIND`, still reports them.
+  test. libbench asks helgrind to leave them unchecked, so a race-free test
+  reports nothing; a libbench built with `NVALGRIND` still reports them.
 - **bpftrace waits for its tracers to attach and traces threaded tests to their
   end** -- a run waits before its measured repeats, the doctor before it passes
   a script, and `wakeup_latency.bt` counts wakeups completed on another CPU.
@@ -560,9 +559,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   (`Collected : 0`). The backend now switches instrumentation on for each
   measured window and off after it, in a container too, so the profile holds
   the measured window and none of the test's work around it.
-  `bench run --profile callgrind` still records the whole process. Without
-  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
-  says the profile covers the whole process.
+  `bench run --profile callgrind` still records the whole process. A libbench
+  built with `NVALGRIND` switches it with `callgrind_control`; without that on
+  PATH, its hint leaves out `--instr-atstart=no` and says the profile covers
+  the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it
@@ -721,7 +721,7 @@ heaptrack` passed. It reports
   check below cannot help there, because a benchmark compiled before it never
   calls it. Both bench libraries now carry SONAME `.so.2`, so that pairing ends
   at `libbench.so.1: cannot open shared object file` before any vernier code
-  runs. `libmonitor` is unchanged at `.so.1`.
+  runs. `libmonitor` moves to `.so.2` for its own reason (below).
   **Action needed:** rebuild benchmarks that link `vernier::bench` or
   `vernier::bench_cuda` against these headers. There is no `.so.1` link to the
   new libraries: an installed 1.0.3 keeps its own `libbench.so.1` and its
@@ -730,6 +730,9 @@ heaptrack` passed. It reports
   consumers from one directory. The number lives in `src/bench/CMakeLists.txt`
   as `BENCH_ABI_SOVERSION` and covers both libraries; `README.md` records the
   policy.
+- `libmonitor` is `libmonitor.so.2`: its file sink's layout changed.
+  **Action needed:** rebuild programs that link `vernier::monitor` against
+  these headers. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - **A benchmark and a bench library from different builds stop with a message**
   -- `libbench` and `libbench_cuda` read `PerfConfig`, `Stats` and
   `PerfGpuConfig` objects laid out by header code compiled into the benchmark,
@@ -994,9 +997,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
   `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
   number of workers it started.
-- **A test name with a comma, a quote or a line break stays one CSV cell** --
-  the CSV writer quotes such a name and doubles each quote inside it, so
-  `bench summary`, `bench compare` and pandas read the row whole.
+- CSV text containing commas, quotes or line breaks stays in its own column.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - **Each completed measurement is its own CSV row** -- a test that measured
   more than once wrote only its last measurement; now every completed
   measurement writes its own row, a case measured more than once in a test
@@ -1004,7 +1006,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 6).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 8).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
@@ -1053,6 +1055,56 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - `bench run --profile compute-sanitizer` identifies truncated racecheck reports
   as incomplete. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- Time each measured repeat at the clock's own resolution, so a call shorter
+  than a microsecond no longer records 0 us/call and a false `[UNSTABLE]`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- Recording while a monitor starts or restarts no longer races on its
+  threshold table or reads one that `start()` freed. Each record reads the
+  table through one acquire load: an ordinary load on x86-64; on a Jetson AGX
+  Thor's Arm cores a loop that only records measured 10.3 to 29.4 ns more a
+  record ([monitor guide](src/monitor/docs/MONITOR_GUIDE.md#at-a-glance)).
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A monitor gauge whose readings are all negative reports its real maximum in
+  the summary instead of 0.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A benchmark's own `alarm()` and SIGALRM handler, and gperftools sampling
+  under `CPUPROFILE_REALTIME`, keep working under `--profile`. The profile
+  watchdog uses a timer when eligible and a parked thread otherwise. Valgrind
+  wraps request fair scheduling where supported; see
+  [troubleshooting](src/bench/docs/TROUBLESHOOTING.md#test-hangs--never-completes)
+  for the signal, fallback and timing limits.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A callgrind wrap started by hand records only the measured windows, with or
+  without `--instr-atstart=no` or valgrind's gdbserver, also with a libbench
+  built where valgrind is not installed, as the release packages are.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A measured window that throws ends the bpftrace, off-CPU, perf and callgrind
+  collections at once instead of leaving them running, and publishes nothing:
+  perf sets its output aside as `stat.aborted.txt` or `<name>.aborted.data`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A perf record, mem or c2c capture that holds no sample says so on stderr,
+  with how to get samples, instead of passing as a profile.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- `--profile-args "record --threads ..."` no longer fails a capture perf wrote:
+  the directory perf writes in that mode is checked, caveated and set aside as
+  `perf.data` is. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- `bench flamegraph` reads the directory `perf record --threads` writes, as
+  input or baseline. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A `contentionRun()` worker that throws, or a worker thread that cannot
+  start, ends the run through the profiler's abort hook with the exception at
+  the caller, instead of ending the process or leaving the profiler running.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A monitor file sink that cannot write, and a file sink with an empty path,
+  say so on stderr; a failed write also gives the most records that can be
+  missing. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A benchmark compiled without gperftools' headers lays out `GperfProfiler` as
+  libbench does. **Action needed:** rebuild benchmarks against these headers
+  (`BENCH_ABI_VERSION` is 8).
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- Under heaptrack 1.3, `bench run --profile heaptrack` fails a run whose
+  benchmark failed or crashed, with the benchmark's exit status, instead of
+  reporting the run as a capture.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

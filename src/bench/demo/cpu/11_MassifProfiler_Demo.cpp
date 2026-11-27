@@ -14,7 +14,7 @@
  *
  *   # Profile one version; --time-unit=B puts the bytes allocated and freed,
  *   # not instructions, on the graph's x-axis
- *   valgrind --tool=massif --time-unit=B --massif-out-file=massif.v0.out \
+ *   valgrind --tool=massif --fair-sched=try --time-unit=B --massif-out-file=massif.v0.out \
  *     ./BenchDemo_11_MassifProfiler --profile massif --cycles 1 --repeats 1 \
  *     --gtest_filter=Massif.JoinV0
  *   ms_print massif.v0.out

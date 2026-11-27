@@ -33,6 +33,11 @@
  *    stop, then stops each with SIGINT, then SIGTERM, then SIGKILL through
  *    the same route, and reports each refused delivery, a tracer that ended
  *    by itself before the stop, and one that did not end with status 0.
+ *  - In abortMeasure(), when the measured window ended by an exception, stops
+ *    every tracer through the same route without judging its capture, says
+ *    so in one line and records nothing: the capture's outcome stays as it
+ *    was, and its files stay. beforeMeasure() stops the same way any tracer
+ *    a window left running, so a capture never holds another window's tracer.
  *  - captureOutcome() says whether the capture is complete, and whether the
  *    scripts emitted anything: READY for tracers that acknowledged both ends
  *    of the capture with the ids they were bound to, were seen to end their
@@ -515,6 +520,12 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+
+  /**
+   * @brief The measured window ended by an exception: stop its tracers, judge
+   * nothing and record nothing (see the class's behaviour).
+   */
+  void abortMeasure() noexcept override;
 
   /**
    * @brief The capture's outcome: empty until a tracer fails to start or the

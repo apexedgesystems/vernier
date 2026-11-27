@@ -10,6 +10,8 @@
 #                `--control fifo:<ctl>,<ack>`, it reads the ping waiting in
 #                <ctl> and answers "ack" in <ack>, as perf does once it counts
 #   broken       --version fails the way a wrapper without the kernel's build does
+#   signalled    --version ends by SIGUSR1, which it sends itself (a signal
+#                that leaves no core dump)
 #   denied       stat fails with the kernel's counter-access message
 #   unsupported  stat counts, but one event is <not supported>
 #   no-control   --control is an unknown option, as for a perf without it
@@ -33,6 +35,14 @@
 #                as perf does, instead of exiting 130
 #   some-unsupported  answers SIGINT with the counts and one event
 #                <not supported>, as perf on the Pi reports branches:u
+#   unconfirmed  answers SIGINT in record mode by writing its data file, but
+#                not perf's "Captured and wrote" line that confirms it
+# In record mode the data file holds the bytes of the file FAKE_PERF_DATA
+# names, when it is set, and a line of text otherwise. With --threads among
+# its arguments it writes the output as perf 6.8 does in that mode, a
+# directory: a copy of the directory FAKE_PERF_DATA names, when it is set,
+# and otherwise a header file "data" holding a line of text and an empty
+# stream "data.0".
 
 PATH=/usr/bin:/bin
 export PATH
@@ -42,6 +52,9 @@ fi
 mode=${FAKE_PERF_MODE:-ok}
 
 if [ "${1:-}" = "--version" ]; then
+  if [ "$mode" = "signalled" ]; then
+    kill -USR1 $$
+  fi
   if [ "$mode" = "broken" ]; then
     echo "WARNING: perf not found for kernel 6.8.0-138" >&2
     echo "  You may need to install the following packages for this specific kernel:" >&2
@@ -123,16 +136,49 @@ if [ "$mode" = "exit-early" ]; then
   exit 1
 fi
 out=""
+threads=no
 prev=""
 for arg in "$@"; do
   if [ "$prev" = "-o" ]; then
     out=$arg
   fi
+  case "$arg" in
+  --threads | --threads=*) threads=yes ;;
+  esac
   prev=$arg
 done
 
+# What perf record writes for -o: a file, or with --threads a directory. An
+# output of the other kind left by an earlier run is removed first (perf
+# renames it to <name>.old).
+write_data() {
+  if [ "$threads" = "yes" ]; then
+    rm -rf "$out"
+    mkdir -p "$out"
+    if [ -n "${FAKE_PERF_DATA:-}" ]; then
+      cp -R "$FAKE_PERF_DATA/." "$out/"
+    else
+      printf 'fake perf data\n' >"$out/data"
+      : >"$out/data.0"
+    fi
+    return
+  fi
+  if [ -d "$out" ]; then
+    rm -rf "$out"
+  fi
+  if [ -n "${FAKE_PERF_DATA:-}" ]; then
+    cat "$FAKE_PERF_DATA" >"$out"
+  else
+    printf 'fake perf data\n' >"$out"
+  fi
+}
+
 finish() {
   case "$mode" in
+  unconfirmed)
+    printf 'fake perf data\n' >"$out"
+    echo "[ perf record: Woken up 1 times to write data ]" >&2
+    ;;
   error-text)
     echo "Error: the fake perf could not read its counters" >&2
     ;;
@@ -152,7 +198,7 @@ finish() {
     ;;
   *)
     if [ -n "$out" ]; then
-      printf 'fake perf data\n' >"$out"
+      write_data
       echo "[ perf record: Woken up 1 times to write data ]" >&2
       echo "[ perf record: Captured and wrote 0.001 MB $out ]" >&2
     else

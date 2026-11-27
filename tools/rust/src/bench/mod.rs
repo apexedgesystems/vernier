@@ -8,6 +8,7 @@
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 /* ----------------------------- Error ----------------------------- */
@@ -140,6 +141,10 @@ pub enum Error {
     /// A compute-sanitizer run whose report shows errors in the benchmark, or
     /// a benchmark that did not end normally under the tool.
     Sanitizer(SanitizerFailure),
+    /// The benchmark ran under a wrap that does not pass its exit status
+    /// through, and the shell that waited on it reported no status for it, so
+    /// whether it passed is not known; the cause names itself.
+    BenchmarkStatusUnknown(String),
     /// `bench profile-all`: these of `total` profile runs failed.
     ProfileAll {
         failed: Vec<String>,
@@ -176,6 +181,7 @@ impl fmt::Display for Error {
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
             Error::Sanitizer(failure) => write!(f, "{failure}"),
+            Error::BenchmarkStatusUnknown(s) => write!(f, "{s}"),
             Error::ProfileAll { failed, total } => write!(
                 f,
                 "{} of {total} profile runs failed: {}",
@@ -380,6 +386,66 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
     }
 }
 
+/* ----------------------------- Private Directories ----------------------------- */
+
+/// A directory of this process's own under the temporary directory, for a
+/// tool's output that only this process reads: an Nsight report's export,
+/// heaptrack's probe, the status heaptrack's shell reports. It is removed,
+/// with what it holds, by `remove` or when dropped.
+pub(crate) struct PrivateDir {
+    path: Option<PathBuf>,
+}
+
+impl PrivateDir {
+    /// A new directory under the temporary directory, readable only by this
+    /// user, named after @p purpose and this process; an existing one is
+    /// never reused.
+    pub(crate) fn create(purpose: &str) -> std::io::Result<Self> {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let base = std::env::temp_dir();
+        loop {
+            let n = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path = base.join(format!("vernier-{purpose}-{}-{n}", std::process::id()));
+            match create_private(&path) {
+                Ok(()) => return Ok(Self { path: Some(path) }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.path.as_deref().unwrap_or(Path::new(""))
+    }
+
+    /// Remove the directory and what it holds.
+    pub(crate) fn remove(mut self) -> std::io::Result<()> {
+        match self.path.take() {
+            Some(path) => std::fs::remove_dir_all(path),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for PrivateDir {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn create_private(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
+}
+
 /* ----------------------------- Modules ----------------------------- */
 
 pub mod compare;
@@ -535,5 +601,27 @@ mod tests {
             InPath::NotExecutable(b.join("dir"))
         );
         assert_eq!(lookup_in(&search(&[&a, &b]), "other"), InPath::Absent);
+    }
+
+    /// @test The private directory is this user's alone, named after its
+    /// purpose, and goes when removed or dropped.
+    #[test]
+    fn private_dir_is_private_and_removed() {
+        let dir = PrivateDir::create("test").unwrap();
+        let path = dir.path().to_path_buf();
+        assert!(path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(&format!("vernier-test-{}-", std::process::id()))));
+        std::fs::write(path.join("profile.sqlite"), "x").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        let other = PrivateDir::create("test").unwrap();
+        assert_ne!(other.path(), path);
+        dir.remove().unwrap();
+        assert!(!path.exists());
+        let other_path = other.path().to_path_buf();
+        drop(other);
+        assert!(!other_path.exists());
     }
 }

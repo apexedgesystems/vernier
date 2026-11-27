@@ -332,8 +332,24 @@ before it reads the macros, so `bench run` gives it the folder named whole,
 from the working directory, as its `Running:` line shows. heaptrack replaces `%h` and `%p` in its `-o` with the host name and
 its process id and has no escape for them, so `bench run` refuses a heaptrack
 folder holding either before anything starts; any other `%` reaches
-heaptrack as it is. After the benchmark exits 0, the file must exist and hold
-something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
+heaptrack as it is. heaptrack 1.5.0 passes the benchmark's exit status
+through; heaptrack 1.3's script exits with its trace compressor's status
+instead. So before a heaptrack run `bench run` runs `heaptrack -o <a private
+folder>/probe /bin/false` once, and when that exits 0 it runs heaptrack's
+script under bash, with a trap given as `BASH_ENV` that writes the status of
+the program the script starts, as the shell that waited on it read it, into
+the file `VERNIER_HEAPTRACK_STATUS` names, in a private folder; the trap
+keeps both variables from the program. First the script runs `/bin/false`,
+`/bin/true` and `/bin/sh -c 'kill -KILL $$'` so, and their reports must read
+1, 0 and 137; then `bench run` says so, runs the benchmark the same way, as
+its `Running:` line shows, and takes the benchmark's status from the trap's
+report, as it takes heaptrack 1.5.0's. Without bash on PATH, or with a report
+that reads otherwise, it refuses heaptrack before anything starts, naming
+what it saw and the remedy. A run whose benchmark the trap reported nothing
+for fails as one whose status is not known, and heaptrack's own failure
+after a benchmark that exited 0 fails as a failed collection, each with
+heaptrack's trace kept. After the benchmark exits 0, the file must exist and
+hold something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
 When the run under ncu named metrics (a replay, or `--metrics`), `bench run`
 then reads the report back with the summary `bench nsight-parse` reads,
@@ -459,18 +475,30 @@ report that never fails on them.
 
 **What the doctor runs, and what it costs.** To say whether each profiler can
 run here, the doctor starts most of the tools once, one after another: each
-valgrind tool and heaptrack on `/bin/true`, a short `perf stat` of its own
-process, the bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu
-and compute-sanitizer. Those starts take most of its time, which depends on
+valgrind tool and heaptrack on `/bin/true` (heaptrack also on `/bin/false`,
+which shows whether it passes its program's exit status through, and where
+it does not, three more times under bash with `bench run`'s trap), a short
+`perf stat` of its own process, the
+bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu and
+compute-sanitizer. Those starts take most of its time, which depends on
 the machine and on the tools installed; no time is promised. One run of this
 release's `bench doctor build/bin/ptests/BenchmarkCPU_PTEST` on each rig,
-timed on core 3 after one untimed run: on the
+timed on core 3 after one untimed run, without heaptrack's start on
+`/bin/false`: on the
 [Raspberry Pi 4 rig](../src/bench/docs/rigs/RIG_PI4.md), with the governor at
 performance, 3.96 s, and 8.60 s with `BENCH_SUDO=1`, under which the
 bpftrace and off-CPU probes attach and run; on the
 [Jetson AGX Thor rig](../src/bench/docs/rigs/RIG_THOR_AGX.md), with its clocks
-as found, 1.35 s, and 3.26 s with `BENCH_SUDO=1`. Other runs and machines take
-their own time. A benchmark run checks only its own request.
+as found, 1.35 s, and 3.26 s with `BENCH_SUDO=1`. That start adds one
+heaptrack start: in the project's CPU image on an x86-64 laptop, with
+heaptrack 1.5.0, 41.9 ms (the median of 21 runs, 40.3 to 47.5 ms), as long as
+its start on `/bin/true` there. Where heaptrack does not pass the status
+through, the three runs under bash, the doctor's and those `bench run` makes
+before each run, took 472 ms in all on that laptop's own heaptrack 1.3.0
+package, outside the image (the median of 21 rounds, 438 to 968 ms, with a
+load average near 13 on its 22 CPUs), where one heaptrack start on
+`/bin/true` took 207 ms. Other runs and machines take their own time. A
+benchmark run checks only its own request.
 
 ### profile-all - Iterate Every Profiler
 

@@ -35,7 +35,8 @@
  *   bench run ./MyTest --profile callgrind                    # Whole-process counts
  *   bench run ./MyTest --profile callgrind --profile-analyze  # Then callgrind_annotate
  *   # Cache simulation: wrap with valgrind directly:
- *   #   valgrind --tool=callgrind --cache-sim=yes ./MyTest --profile callgrind
+ *   #   valgrind --tool=callgrind --fair-sched=try --instr-atstart=no --cache-sim=yes \
+ *   #     ./MyTest --profile callgrind
  *
  * The profile is complete when valgrind exits: bench run checks it and runs
  * callgrind_annotate after that exit; under a manual wrap, read it then.
@@ -59,16 +60,22 @@ namespace bench {
 /**
  * @brief Valgrind Callgrind profiler implementation.
  *
- * Under a manual wrap started with --instr-atstart=no, switches instrumentation
- * on before each measured window and off after it with callgrind_control, so
- * the profile valgrind writes at exit holds the measured calls and the
- * harness's own work between the two hooks, and not the rest of the process.
- * Under the wrap `bench run --profile callgrind` uses, the recording covers the
- * whole process and is left alone. Not under valgrind, nothing is switched and
- * measurement proceeds normally.
+ * Under a wrap started by hand, switches instrumentation on before each
+ * measured window and off after it, also when the window ends by an exception
+ * (abortMeasure()), so the profile valgrind writes at exit
+ * holds the measured calls and the harness's own work between the two hooks,
+ * and not the rest of the process. It switches it from inside the process with
+ * callgrind's client requests, dropping what was counted before the first
+ * window, so the profile is the windows with or without --instr-atstart=no and
+ * with valgrind's gdbserver off; a libbench built with NVALGRIND, which has no
+ * requests, switches it with callgrind_control, which needs the gdbserver and
+ * the wrap's --instr-atstart=no. Under the wrap `bench run
+ * --profile callgrind` uses, the recording covers the whole process and is
+ * left alone. Not under valgrind, nothing is switched and measurement proceeds
+ * normally.
  *
  * Recommended invocation:
- *   valgrind --tool=callgrind --instr-atstart=no ./MyTest --profile callgrind
+ *   valgrind --tool=callgrind --fair-sched=try --instr-atstart=no ./MyTest --profile callgrind
  */
 class CallgrindProfiler final : public Profiler {
 public:
@@ -90,6 +97,12 @@ public:
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
 
+  /**
+   * @brief The measured window ended by an exception: switch the recording
+   * off, as afterMeasure() does, so the caller's code after it is not counted.
+   */
+  void abortMeasure() noexcept override;
+
 private:
   void applyPlan();
 
@@ -100,8 +113,9 @@ private:
   bool runningUnderValgrind_{false};
   bool wrappedByRunner_{false};
   // True when this backend switches instrumentation around the measured
-  // window: under a wrap started by hand, with callgrind_control on PATH;
-  // bench run's wrap records the whole process.
+  // window: under a wrap started by hand, with callgrind's client requests
+  // (every build but one with NVALGRIND) or callgrind_control on PATH; bench
+  // run's wrap records the whole process.
   bool canToggle_{false};
 };
 
@@ -120,12 +134,14 @@ std::optional<ReadinessResult> parseCallgrindMode(const std::string& profileArgs
  *
  * The doctor's scopes probe the tool's start; a run reads its own memory map
  * for valgrind's callgrind (its executable: callgrind maps no preload of its
- * own). A wrap started by hand without callgrind_control is a caveat: the
- * window cannot be switched. --profile-analyze is bench run's, after the
- * process exits: ready under its wrap, an analysis-stage error under a wrap
- * started by hand, and in the doctor's scopes an analysis-stage error when
- * callgrind_annotate is missing. On success the result's plan is a
- * ValgrindPlan.
+ * own). In a libbench built with NVALGRIND, which has no callgrind client
+ * requests, a wrap started by hand is a caveat: with callgrind_control on
+ * PATH, the window is switched through valgrind's gdbserver, and without it,
+ * it cannot be switched.
+ * --profile-analyze is bench run's, after the process exits: ready under its
+ * wrap, an analysis-stage error under a wrap started by hand, and in the
+ * doctor's scopes an analysis-stage error when callgrind_annotate is missing.
+ * On success the result's plan is a ValgrindPlan.
  */
 ReadinessResult checkCallgrindRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
 

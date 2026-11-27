@@ -31,7 +31,7 @@
  *       --gtest_filter="Profilers.GperfIntegration" --profile gperf --artifact-root profiles
  *
  *   # callgrind records a process only when valgrind runs it
- *   valgrind --tool=callgrind --instr-atstart=no \
+ *   valgrind --tool=callgrind --fair-sched=try --instr-atstart=no \
  *       --callgrind-out-file=profiles/Profilers.CallgrindIntegration.callgrind/callgrind.out \
  *       ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
  *       --gtest_filter="Profilers.CallgrindIntegration" --profile callgrind \

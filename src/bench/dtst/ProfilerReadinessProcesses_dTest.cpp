@@ -236,6 +236,25 @@ TEST(ReadinessProbes, ExitStatusAndOutput) {
 }
 
 /**
+ * @test A probe that a signal ends is no success: its status read here, it
+ * did not exit, its signal is kept, and its description names it. The
+ * helper sends itself SIGUSR1, which ends it without a core dump.
+ */
+TEST(ReadinessProbes, SignalledProbeIsNotSuccess) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ProbeResult R = runBoundedProbe({HELPER, "signalled"}, 5000, dir.context());
+  EXPECT_TRUE(R.started);
+  EXPECT_TRUE(R.statusObtained);
+  EXPECT_FALSE(R.timedOut);
+  EXPECT_FALSE(R.exited) << "a signalled probe was read as an exit, status " << R.exitCode;
+  EXPECT_EQ(R.termSignal, SIGUSR1);
+  EXPECT_FALSE(R.succeeded()) << R.describe();
+  EXPECT_EQ(R.describe(), "ended by signal " + std::to_string(SIGUSR1));
+}
+
+/**
  * @test A probe reaped elsewhere, as an application that ignores SIGCHLD or
  * sets SA_NOCLDWAIT reaps it, leaves no exit status to read: whether it
  * exited 0 or 42, it neither exited nor succeeded as far as its result says,

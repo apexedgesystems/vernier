@@ -14,9 +14,11 @@
 
 #include <cstddef>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 using vernier::bench::PerfRow;
@@ -162,22 +164,6 @@ TEST(PerfCsvTest, HeaderEndsWithNewline) {
 }
 
 /* ----------------------------- Row Tests ----------------------------- */
-
-/** @test Basic row serialization. */
-TEST(PerfCsvTest, BasicRowSerialization) {
-  CsvCapture csv;
-  const Stats S = makeTestStats();
-
-  writeCsvRow(csv.stream(), makeBasicRow(S));
-
-  const std::string CONTENT = csv.content();
-
-  EXPECT_NE(CONTENT.find("Suite.Test"), std::string::npos);
-  EXPECT_NE(CONTENT.find("1000"), std::string::npos);  // cycles
-  EXPECT_NE(CONTENT.find("10000"), std::string::npos); // callsPerSecond
-  EXPECT_NE(CONTENT.find("100"), std::string::npos);   // median
-  EXPECT_NE(CONTENT.find("0.1"), std::string::npos);   // cv
-}
 
 /** @test Row with profile metadata. */
 TEST(PerfCsvTest, RowWithProfileMetadata) {
@@ -335,7 +321,7 @@ TEST(PerfCsvTest, RowHasStabilityFields) {
   EXPECT_NE(CONTENT.find(",0,0.1"), std::string::npos);
 }
 
-/* ----------------------------- Test Name Cell Tests ----------------------------- */
+/* ----------------------------- Cell Tests ----------------------------- */
 
 namespace {
 
@@ -382,6 +368,22 @@ std::vector<std::vector<std::string>> readCsvRecords(const std::string& text) {
     records.push_back(record);
   }
   return records;
+}
+
+/** @brief The cell of @p record under the header column @p name (a failure if none). */
+std::string cellByName(const std::vector<std::string>& header,
+                       const std::vector<std::string>& record, const std::string& name) {
+  const auto IT = std::find(header.begin(), header.end(), name);
+  if (IT == header.end()) {
+    ADD_FAILURE() << "no column " << name;
+    return {};
+  }
+  const auto INDEX = static_cast<std::size_t>(IT - header.begin());
+  if (INDEX >= record.size()) {
+    ADD_FAILURE() << "the record ends before column " << name;
+    return {};
+  }
+  return record[INDEX];
 }
 
 /** @brief A header and one row named @p testName: the file's text and its records. */
@@ -449,4 +451,189 @@ TEST(PerfCsvTest, PlainTestNameIsUnquoted) {
   EXPECT_EQ(CSV.text.find('"'), std::string::npos);
   ASSERT_EQ(CSV.records.size(), 2U);
   EXPECT_EQ(CSV.records[1][0], NAME);
+}
+
+/** @test Writes every text cell as one cell, whatever commas or quotes it holds */
+TEST(PerfCsvTest, EveryStringCellIsOneCell) {
+  // A comma in each text cell of the four groups and a quote in two of them.
+  // Values a run would not record (a comma in the platform) pin the writer.
+  PerfRow row = makeBasicRow(makeTestStats());
+  row.testName = "Sweep.Sizes/64,256";
+  row.minLevel = "WARN,\"X\"";
+  row.profileTool = "perf,record";
+  row.profileDir = "./art,1/Sweep.Sizes+2F64,256 \"q\".perf";
+  row.timestamp = "2026-11-14T12:00:00Z,0";
+  row.gitHash = "v1.0.4,rc-1-gabc1234";
+  row.hostname = "bench,host";
+  row.platform = "x86_64,linux";
+  row.gpuModel = "Test GPU, 16 GB";
+  row.computeCapability = "8.9,sm_89";
+
+  CsvCapture csv;
+  writeCsvHeader(csv.stream(), true, true, true);
+  writeCsvRow(csv.stream(), row, true, true, true);
+  const std::string TEXT = csv.content();
+  const std::vector<std::vector<std::string>> RECORDS = readCsvRecords(TEXT);
+
+  ASSERT_EQ(RECORDS.size(), 2U) << TEXT;
+  const std::vector<std::string>& HEADER = RECORDS[0];
+  const std::vector<std::string>& CELLS = RECORDS[1];
+  ASSERT_EQ(CELLS.size(), HEADER.size()) << TEXT;
+  EXPECT_EQ(cellByName(HEADER, CELLS, "test"), row.testName);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "minLevel"), row.minLevel);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "profileTool"), *row.profileTool);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "profileDir"), *row.profileDir);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "timestamp"), row.timestamp);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "gitHash"), row.gitHash);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "hostname"), row.hostname);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "platform"), row.platform);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "gpuModel"), *row.gpuModel);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "computeCapability"), *row.computeCapability);
+  // The numbers between and after the text cells stay under their headers.
+  EXPECT_EQ(cellByName(HEADER, CELLS, "wallMedian"), "100");
+  EXPECT_EQ(cellByName(HEADER, CELLS, "kernelTimeUs"), "");
+  // The quotes inside a cell are doubled, as in the test name.
+  EXPECT_NE(TEXT.find(",\"WARN,\"\"X\"\"\","), std::string::npos) << TEXT;
+}
+
+/** @test Writes each value of every group under its own column, read back by header name */
+TEST(PerfCsvTest, EveryColumnHoldsItsOwnValue) {
+  // Each column holds a value no other column holds, except the 0/1 flags,
+  // which alternate: a value written under another column's name fails.
+  PerfRow row;
+  row.testName = "Suite.EveryColumn/64,256";
+  row.cycles = 1001;
+  row.repeats = 12;
+  row.warmup = 3;
+  row.threads = 5;
+  row.msgBytes = 96;
+  row.console = true;
+  row.nonBlocking = false;
+  row.minLevel = "WARN";
+  row.stats = Stats{.median = 12.5,
+                    .p10 = 10.25,
+                    .p90 = 14.75,
+                    .p99 = 15.5,
+                    .p999 = 15.875,
+                    .min = 9.5,
+                    .max = 16.125,
+                    .mean = 12.625,
+                    .stddev = 1.375,
+                    .cv = 0.11};
+  row.callsPerSecond = 80000.0;
+  row.stable = false;
+  row.cvThreshold = 0.05;
+  row.profileTool = "perf";
+  row.profileDir = "./art/Suite.EveryColumn+2F64,256.perf";
+  row.timestamp = "2026-11-14T12:00:00Z";
+  row.gitHash = "v1.0.4-1-gabc1234";
+  row.hostname = "bench-host";
+  row.platform = "x86_64";
+  row.gpuModel = "Test GPU";
+  row.computeCapability = "8.9";
+  row.kernelTimeUs = 21.5;
+  row.transferTimeUs = 3.25;
+  row.h2dBytes = 4096;
+  row.d2hBytes = 2048;
+  row.speedupVsCpu = 7.75;
+  row.memBandwidthGBs = 123.5;
+  row.occupancy = 0.625;
+  row.smClockMHz = 1410;
+  row.throttling = true;
+  row.powerDrawW = 250.5;
+  row.powerLimitW = 300.25;
+  row.temperatureC = 65;
+  row.temperatureDeltaC = 7;
+  row.cuptiKernelLaunches = 33;
+  row.cuptiRegistersMedian = 40;
+  row.cuptiRegistersMax = 48;
+  row.cuptiStaticSmemBytes = 1536;
+  row.cuptiDynamicSmemBytes = 768;
+  row.deviceId = 2;
+  row.deviceCount = 6;
+  row.multiGpuEfficiency = 0.875;
+  row.p2pBandwidthGBs = 45.5;
+  row.umPageFaults = 17;
+  row.umH2DMigrations = 9;
+  row.umD2HMigrations = 11;
+  row.umMigrationTimeUs = 18.75;
+  row.umThrashing = false;
+
+  // 22 core, 2 profile, 4 metadata and 29 GPU columns, in the header's order.
+  const std::vector<std::pair<std::string, std::string>> EXPECTED = {
+      {"test", "Suite.EveryColumn/64,256"},
+      {"cycles", "1001"},
+      {"repeats", "12"},
+      {"warmup", "3"},
+      {"threads", "5"},
+      {"msgBytes", "96"},
+      {"console", "1"},
+      {"nonBlocking", "0"},
+      {"minLevel", "WARN"},
+      {"wallMedian", "12.5"},
+      {"wallP10", "10.25"},
+      {"wallP90", "14.75"},
+      {"wallP99", "15.5"},
+      {"wallP999", "15.875"},
+      {"wallMin", "9.5"},
+      {"wallMax", "16.125"},
+      {"wallMean", "12.625"},
+      {"wallStddev", "1.375"},
+      {"wallCV", "0.11"},
+      {"callsPerSecond", "80000"},
+      {"stable", "0"},
+      {"cvThreshold", "0.05"},
+      {"profileTool", "perf"},
+      {"profileDir", "./art/Suite.EveryColumn+2F64,256.perf"},
+      {"timestamp", "2026-11-14T12:00:00Z"},
+      {"gitHash", "v1.0.4-1-gabc1234"},
+      {"hostname", "bench-host"},
+      {"platform", "x86_64"},
+      {"gpuModel", "Test GPU"},
+      {"computeCapability", "8.9"},
+      {"kernelTimeUs", "21.500000"},
+      {"transferTimeUs", "3.250000"},
+      {"h2dBytes", "4096"},
+      {"d2hBytes", "2048"},
+      {"speedupVsCpu", "7.750000"},
+      {"memBandwidthGBs", "123.500000"},
+      {"occupancy", "0.625000"},
+      {"smClockMHz", "1410"},
+      {"throttling", "1"},
+      {"powerDrawW", "250.500000"},
+      {"powerLimitW", "300.250000"},
+      {"temperatureC", "65"},
+      {"temperatureDeltaC", "7"},
+      {"cuptiKernelLaunches", "33"},
+      {"cuptiRegistersMedian", "40"},
+      {"cuptiRegistersMax", "48"},
+      {"cuptiStaticSmemBytes", "1536"},
+      {"cuptiDynamicSmemBytes", "768"},
+      {"deviceId", "2"},
+      {"deviceCount", "6"},
+      {"multiGpuEfficiency", "0.875000"},
+      {"p2pBandwidthGBs", "45.500000"},
+      {"umPageFaults", "17"},
+      {"umH2DMigrations", "9"},
+      {"umD2HMigrations", "11"},
+      {"umMigrationTimeUs", "18.750000"},
+      {"umThrashing", "0"},
+  };
+
+  CsvCapture csv;
+  writeCsvHeader(csv.stream(), true, true, true);
+  writeCsvRow(csv.stream(), row, true, true, true);
+  const std::string TEXT = csv.content();
+  const std::vector<std::vector<std::string>> RECORDS = readCsvRecords(TEXT);
+
+  ASSERT_EQ(RECORDS.size(), 2U) << TEXT;
+  const std::vector<std::string>& HEADER = RECORDS[0];
+  const std::vector<std::string>& CELLS = RECORDS[1];
+  ASSERT_EQ(HEADER.size(), EXPECTED.size()) << "a column without an expected value, or the reverse";
+  ASSERT_EQ(CELLS.size(), HEADER.size()) << TEXT;
+  for (std::size_t i = 0; i < EXPECTED.size(); ++i) {
+    EXPECT_EQ(HEADER[i], EXPECTED[i].first) << "column " << i;
+    EXPECT_EQ(cellByName(HEADER, CELLS, EXPECTED[i].first), EXPECTED[i].second)
+        << EXPECTED[i].first;
+  }
 }

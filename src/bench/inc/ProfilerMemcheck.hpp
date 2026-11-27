@@ -23,7 +23,7 @@
  *   bench run ./MyTest --profile memcheck --cycles 5 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
- *   valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
+ *   valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=1 \
  *       --log-file=run.memcheck.log \
  *       ./MyTest --profile memcheck --cycles 5 --gtest_filter='Foo.Bar'
  *

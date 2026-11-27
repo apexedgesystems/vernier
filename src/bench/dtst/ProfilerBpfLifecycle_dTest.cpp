@@ -11,6 +11,8 @@
  * live environment. Nothing here needs privileges or the real bpftrace.
  */
 
+#include "src/bench/inc/PerfRegistry.hpp"
+#include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerBpftrace.hpp"
 #include "src/bench/inc/ProfilerOffCpu.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
@@ -195,6 +197,11 @@ bool exited(pid_t pid) {
   return COMM_END != std::string::npos && COMM_END + 2 < text.size() && text[COMM_END + 2] == 'Z';
 }
 
+/** @brief What a measured window throws in the abort tests, with a mark to recognise it by. */
+struct WindowFailed {
+  int mark = 0;
+};
+
 /** @brief True when process @p pid is a child of this process (so this test may signal it). */
 bool childOfThisProcess(pid_t pid) {
   std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
@@ -302,6 +309,54 @@ protected:
 
   /** @brief Where planned runs write their capture folders. */
   std::string captures() const { return dir_.path() + "/captures"; }
+
+  /**
+   * @brief The live environment the registry's decision reads for a case run
+   * through the harness, as a benchmark runs one: the fakes first on PATH
+   * (git, for the run's metadata, still behind them), the scripts directory,
+   * and the fakes' log, until it goes out of scope.
+   */
+  class HarnessEnvironment {
+  public:
+    explicit HarnessEnvironment(const BpfCheckTest& test)
+        : path_("PATH", test.dir_.path() + ":" + inheritedPath()),
+          scripts_("PERF_BPF_SCRIPTS", test.dir_.path() + "/scripts"),
+          log_("FAKE_LOG", test.dir_.logPath()) {}
+
+  private:
+    static std::string inheritedPath() {
+      const char* path = std::getenv("PATH");
+      return path != nullptr ? path : "/usr/bin:/bin";
+    }
+
+    ScopedEnv path_;
+    ScopedEnv scripts_;
+    ScopedEnv log_;
+  };
+
+  /** @brief A bpftrace request for the probe script, written under captures(). */
+  vernier::bench::PerfConfig harnessConfig(const std::string& backend) const {
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = backend;
+    if (backend == "bpftrace") {
+      cfg.bpfScripts = {"probe_script"};
+    }
+    cfg.artifactRoot = captures();
+    return cfg;
+  }
+
+  /** @brief The pids of the tracers the bpftrace windows of case @p testName launched, in order. */
+  std::vector<pid_t> launchedFor(const std::string& testName) const {
+    std::vector<pid_t> pids;
+    for (const std::string& line :
+         dir_.logLines("bpftrace -q -B none " + captures() + "/" + testName + ".bpf/")) {
+      const auto AT = line.rfind(" pid=");
+      if (AT != std::string::npos) {
+        pids.push_back(static_cast<pid_t>(std::stol(line.substr(AT + 5))));
+      }
+    }
+    return pids;
+  }
 
   /**
    * @brief Run one case of @p backend from @p decision's plan, with @p env set
@@ -1539,6 +1594,160 @@ TEST_F(BpfCheckTest, IncompleteCaptureFailsTheRun) {
   }
   for (const pid_t TRACER : tracerPids(dir_)) {
     EXPECT_TRUE(exited(TRACER)) << "tracer " << TRACER << " outlived the run";
+    endIfLeft(TRACER);
+  }
+}
+
+/* ----------------------------- bpftrace: a window that throws ----------------------------- */
+
+/**
+ * @test A measured window that ends by an exception, run through the harness
+ * as a benchmark runs it: the exception reaches the caller as it was thrown,
+ * nothing is published, and by then the tracer the window started has ended,
+ * judged by no one: no failure is recorded, and the case says its output is
+ * no capture.
+ */
+TEST_F(BpfCheckTest, BpftraceAbortEndsItsTracers) {
+  const HarnessEnvironment ENV(*this);
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  (void)vernier::bench::PerfRegistry::instance().takeAll();
+  StderrCapture err;
+  {
+    vernier::bench::PerfCase pc =
+        vernier::bench::makePerfCaseWithProfiler("Bpf.Aborted", harnessConfig("bpftrace"));
+    try {
+      pc.measured([] { throw WindowFailed{7}; });
+      ADD_FAILURE() << "the window's exception did not reach the caller";
+    } catch (const WindowFailed& failed) {
+      EXPECT_EQ(failed.mark, 7) << "another exception reached the caller";
+    }
+    // While the case lives, as a benchmark that caught the exception keeps it.
+    const std::vector<pid_t> LAUNCHED = launchedFor("Bpf.Aborted");
+    ASSERT_EQ(LAUNCHED.size(), 1U) << dir_.log();
+    EXPECT_TRUE(gone(LAUNCHED[0]))
+        << "the window's tracer " << LAUNCHED[0] << " still runs after the window ended";
+    endIfLeft(LAUNCHED[0]);
+  }
+  EXPECT_FALSE(vernier::bench::PerfRegistry::instance().take().has_value())
+      << "the aborted window published a row";
+  const std::vector<ProfileFailure> FAILED = registry.failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+  registry.resetFailures();
+  EXPECT_NE(err.text().find("[bpftrace] the measured window ended by an exception: its tracers "
+                            "were stopped, and their output in " +
+                            captures() + "/Bpf.Aborted.bpf is no capture\n"),
+            std::string::npos)
+      << err.text();
+}
+
+/**
+ * @test The case measures again after a window that ended by an exception:
+ * while the new window measures, its own tracer is the case's only one
+ * running, and its capture, its report holding the window's two
+ * acknowledgements and the maps once each, is judged by itself: no failure,
+ * and the row published.
+ */
+TEST_F(BpfCheckTest, BpftraceMeasureAfterAnAbortIsItsOwnCapture) {
+  const HarnessEnvironment ENV(*this);
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  (void)vernier::bench::PerfRegistry::instance().takeAll();
+  StderrCapture err;
+  std::vector<pid_t> running; // The case's tracers alive while the second window measured.
+  {
+    vernier::bench::PerfCase pc =
+        vernier::bench::makePerfCaseWithProfiler("Bpf.Again", harnessConfig("bpftrace"));
+    try {
+      pc.measured([] { throw WindowFailed{1}; });
+    } catch (const WindowFailed&) {
+    }
+    bool looked = false;
+    pc.measured([&] {
+      if (!looked) {
+        looked = true;
+        for (const pid_t TRACER : launchedFor("Bpf.Again")) {
+          if (!gone(TRACER)) {
+            running.push_back(TRACER);
+          }
+        }
+      }
+    });
+  }
+  const std::vector<pid_t> LAUNCHED = launchedFor("Bpf.Again");
+  ASSERT_EQ(LAUNCHED.size(), 2U) << dir_.log();
+  EXPECT_EQ(running, std::vector<pid_t>{LAUNCHED[1]})
+      << "the first window's tracer " << LAUNCHED[0] << " was still running in the second";
+  EXPECT_TRUE(vernier::bench::PerfRegistry::instance().take().has_value())
+      << "the second window published no row";
+  const std::vector<ProfileFailure> FAILED = registry.failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message << "\n" << err.text();
+  registry.resetFailures();
+  const std::string REPORT = fileText(reportPath("Bpf.Again"));
+  const auto COUNT = [&REPORT](const std::string& part) {
+    std::size_t n = 0;
+    for (std::size_t at = REPORT.find(part); at != std::string::npos;
+         at = REPORT.find(part, at + part.size())) {
+      ++n;
+    }
+    return n;
+  };
+  EXPECT_EQ(COUNT("bpftrace armed "), 1U) << REPORT;
+  EXPECT_EQ(COUNT("bpftrace disarmed "), 1U) << REPORT;
+  EXPECT_EQ(COUNT("@c: 1"), 1U) << REPORT;
+  EXPECT_EQ(REPORT.find('\0'), std::string::npos) << "the report holds another writer's gap";
+  EXPECT_EQ(err.text().find("the previous measured window did not end"), std::string::npos)
+      << "the second window found the aborted one's tracers still held:\n"
+      << err.text();
+  for (const pid_t TRACER : LAUNCHED) {
+    EXPECT_TRUE(gone(TRACER)) << "tracer " << TRACER << " outlived its case";
+    endIfLeft(TRACER);
+  }
+}
+
+/**
+ * @test A start over a window that ended through neither afterMeasure() nor
+ * abortMeasure(), as hooks attached without the abort hook leave one, first
+ * stops that window's tracer and says so: the new capture is its own
+ * tracer's alone, and READY.
+ */
+TEST_F(BpfCheckTest, BpftraceStartOverStopsTheLeftTracerFirst) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  StderrCapture err;
+  std::optional<ReadinessResult> outcome;
+  std::vector<pid_t> runningInTheSecond;
+  {
+    BpftraceProfiler profiler(harnessConfig("bpftrace"), "Bpf.Left",
+                              std::dynamic_pointer_cast<const BpftracePlan>(R.plan));
+    profiler.beforeMeasure();
+    profiler.beforeMeasure();
+    for (const pid_t TRACER : launchedFor("Bpf.Left")) {
+      if (!gone(TRACER)) {
+        runningInTheSecond.push_back(TRACER);
+      }
+    }
+    profiler.afterMeasure(vernier::bench::Stats{});
+    outcome = profiler.captureOutcome();
+  }
+  const std::vector<pid_t> LAUNCHED = launchedFor("Bpf.Left");
+  ASSERT_EQ(LAUNCHED.size(), 2U) << dir_.log();
+  EXPECT_EQ(runningInTheSecond, std::vector<pid_t>{LAUNCHED[1]})
+      << "the first window's tracer " << LAUNCHED[0] << " was still running in the second";
+  ASSERT_TRUE(outcome.has_value()) << err.text();
+  EXPECT_EQ(outcome->cause, ReadinessCause::READY) << outcome->report.message;
+  const std::vector<ProfileFailure> FAILED = registry.failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+  registry.resetFailures();
+  EXPECT_NE(err.text().find("[bpftrace] the previous measured window did not end through the "
+                            "profiler's hooks: its tracers were stopped, and their output in " +
+                            captures() + "/Bpf.Left.bpf is no capture\n"),
+            std::string::npos)
+      << err.text();
+  for (const pid_t TRACER : LAUNCHED) {
     endIfLeft(TRACER);
   }
 }
@@ -3207,6 +3416,51 @@ TEST_F(OffCpuCaptureTest, WithSleepsIsWritten) {
   EXPECT_EQ(DISARMED[1], ownThreadId()) << "the thread that stops the capture disarms it";
   EXPECT_EQ(DISARMED[2], 27);
   EXPECT_TRUE(gone(lastRunTracer())) << "the tracer outlived its capture";
+}
+
+/**
+ * @test A measured window that ends by an exception, run through the harness
+ * as a benchmark runs it: the exception reaches the caller as it was thrown,
+ * nothing is published, and by then the window's tracer has ended; its
+ * capture is neither read nor published, then or when the case ends ("stacks
+ * written" never printed), no failure is recorded, and one line says so.
+ */
+TEST_F(OffCpuCaptureTest, AbortEndsTheCaptureUnpublished) {
+  const HarnessEnvironment ENV(*this);
+  const ScopedEnv DUMP("FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt"));
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  (void)vernier::bench::PerfRegistry::instance().takeAll();
+  StderrCapture err;
+  pid_t tracer = -1;
+  {
+    vernier::bench::PerfCase pc =
+        vernier::bench::makePerfCaseWithProfiler("OffCpu.Aborted", harnessConfig("offcpu"));
+    try {
+      pc.measured([] { throw WindowFailed{8}; });
+      ADD_FAILURE() << "the window's exception did not reach the caller";
+    } catch (const WindowFailed& failed) {
+      EXPECT_EQ(failed.mark, 8) << "another exception reached the caller";
+    }
+    // While the case lives, as a benchmark that caught the exception keeps it.
+    tracer = lastRunTracer();
+    ASSERT_NE(tracer, -1) << dir_.log();
+    EXPECT_TRUE(gone(tracer)) << "the window's tracer " << tracer
+                              << " still runs after the window ended";
+  }
+  endIfLeft(tracer);
+  EXPECT_FALSE(vernier::bench::PerfRegistry::instance().take().has_value())
+      << "the aborted window published a row";
+  const std::vector<ProfileFailure> FAILED = registry.failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+  registry.resetFailures();
+  const std::string TEXT = err.text();
+  EXPECT_EQ(TEXT.find("stacks written"), std::string::npos) << TEXT;
+  EXPECT_NE(TEXT.find("[offcpu] the measured window ended by an exception: the tracer was "
+                      "stopped, and its capture in " +
+                      captures() + "/OffCpu.Aborted.offcpu is not published\n"),
+            std::string::npos)
+      << TEXT;
 }
 
 /**

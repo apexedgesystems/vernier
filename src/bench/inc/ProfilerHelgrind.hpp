@@ -23,7 +23,7 @@
  *   bench run ./MyTest --profile helgrind --cycles 5 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
- *   valgrind --tool=helgrind --log-file=run.helgrind.log \
+ *   valgrind --tool=helgrind --fair-sched=try --log-file=run.helgrind.log \
  *       ./MyTest --profile helgrind --cycles 5 --gtest_filter='Foo.Bar'
  *
  * Modes (--profile-args):

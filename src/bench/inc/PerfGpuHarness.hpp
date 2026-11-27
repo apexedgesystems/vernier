@@ -357,7 +357,8 @@ MultiGpuKernelBuilder::measureP2PBandwidth(int srcDevice, int dstDevice, size_t 
  * profiler lives through the before, after and abort hooks: a measurement
  * that ends by an exception calls its abortMeasure(), which ends what the
  * before hook started in a backend that implements it: gperf stops its
- * capture, Nsight pops the window's NVTX range.
+ * capture, Nsight pops the window's NVTX range, and perf, bpftrace, offcpu
+ * and callgrind under a wrap started by hand end their collections.
  */
 inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
   auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
