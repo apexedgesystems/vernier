@@ -2493,7 +2493,9 @@ mod tests {
             (&["/bin/true"][..], "0\n"),
             (&["/bin/sh", "-c", "exit 3"][..], "3\n"),
             (&["/bin/sh", "-c", "kill -KILL $$"][..], "137\n"),
-            (&["/bin/sh", "-c", "kill -TERM $$"][..], "143\n"),
+            // SIGABRT: a program started with INT, TERM and HUP ignored keeps them ignored, so
+            // a SIGTERM of its own would not end it.
+            (&["/bin/sh", "-c", "kill -ABRT $$"][..], "134\n"),
         ] {
             assert_eq!(
                 under_trap(dir.path(), script, args).0.as_deref(),
