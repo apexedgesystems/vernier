@@ -148,9 +148,11 @@ const std::string& testName() const noexcept;
 
 **`contentionRun(worker, label)`**
 
-- Framework spawns `threads()` workers, each calling `worker()` in a loop
+- Framework starts `threads()` threads together; each calls `worker()`
+  `cycles()` times per repeat
 - Use for: Multi-threaded scalability testing
-- Each worker performs `cycles()` operations
+- `worker()` is one operation: the framework supplies the loop and the
+  threads
 - If a worker throws, or a worker thread cannot be started, the run ends as
   `measured()` ends when `fn()` throws: the workers started are joined, the
   abort hook runs, nothing is published, and the first exception reaches you
@@ -296,28 +298,14 @@ with a notice that nothing was profiled. See the
 
 **Supported profilers** (each self-registers via the backend registry):
 
-CPU:
+- CPU: `perf`, `gperf`, `callgrind`, `bpftrace`, `rapl`, `massif`,
+  `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`
+- GPU: `nsight` (or `nsys`), `ncu`, `compute-sanitizer`, `rocprof` (not
+  validated on AMD hardware)
 
-- `perf` - Linux perf_events (`stat` / `record` / `mem` / `c2c` modes)
-- `gperf` - gperftools (CPU + optional heap sampling)
-- `callgrind` - valgrind callgrind (deterministic instruction counts)
-- `bpftrace` - BPF tracing (syscall / fsync latency scripts)
-- `rapl` - Intel RAPL (energy measurement)
-- `massif` - valgrind massif (heap usage timeline, ~20x overhead)
-- `memcheck` - valgrind memcheck (memory errors and leaks)
-- `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
-- `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
-- `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
-- `jemalloc` - jemalloc's sampling heap profiler (a jemalloc built with profiling, preloaded)
-
-GPU:
-
-- `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
-  canonical nsys stats reports)
-- `ncu` - NVIDIA Nsight Compute (per-kernel analysis)
-- `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
-  / synccheck / initcheck)
-- `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
+The advanced guide's
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers) gives what each
+records, needs, writes and costs.
 
 Adjacent in-process instrumentation:
 
@@ -345,7 +333,7 @@ PERF_TEST(MyComponent, Throughput) {
 # CPU profiling with perf
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
 
-# Heap profiling with gperftools
+# CPU sampling with gperftools
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
 # Energy measurement with RAPL (read access to /dev/cpu/0/msr needed)
@@ -498,7 +486,7 @@ struct PerfGpuResult {
   GpuStats stats{};         // Comprehensive GPU statistics (see GpuStats below)
   double kernelTimeUs{};    // CUDA event kernel time
   double transferTimeUs{};  // H2D + D2H transfer time
-  double totalTimeUs{};     // Kernel + transfers
+  double totalTimeUs{};     // One round trip: copies in, one launch, copies out
   double callsPerSecond{};  // 1e6 / totalTimeUs
   double speedupVsCpu{};    // Set by cpuBaseline() comparison
   std::string label;        // Kernel label from cudaKernel()
@@ -506,12 +494,12 @@ struct PerfGpuResult {
 };
 
 struct GpuStats {
-  Stats cpuStats{};                    // CPU-side timing
+  Stats cpuStats{};                    // Per-repeat round-trip times
   GpuDeviceInfo deviceInfo{};          // GPU model, compute capability
   MemoryTransferProfile transfers{};   // H2D/D2H bytes and bandwidthGBs()
-  OccupancyMetrics occupancy{};        // achievedOccupancy, block size, warps
-  ClockSpeedProfile clocks{};          // smClockMHzEnd, isThrottling()
-  PowerThermalProfile powerThermal{};  // Power draw, temperature (NVML)
+  OccupancyMetrics occupancy{};        // Launch shape and its occupancy estimate
+  ClockSpeedProfile clocks{};          // NVML SM/memory clocks at start and end
+  PowerThermalProfile powerThermal{};  // NVML power and temperature at start and end
   CuptiKernelStats cupti{};            // In-process per-launch kernel metrics
   double kernelTimeMedianUs{};
   double transferTimeMedianUs{};
@@ -528,14 +516,26 @@ struct GpuStats {
 // GPU CV% validation
 EXPECT_STABLE_CV_GPU(gpuResult, perf.cpuConfig());
 
-// Occupancy validation
-EXPECT_GT(gpuResult.stats.occupancy.achievedOccupancy, 0.5)
-  << "Low occupancy - kernel may be register/shared memory bound";
+// Occupancy: the estimate says what the launch shape allows, not how busy
+// the GPU was. A test tuned for a launch shape can require the estimate that
+// shape gave, so that a changed shape shows
+EXPECT_GE(gpuResult.stats.occupancy.achievedOccupancy, TUNED_SHAPE_ESTIMATE);
 
-// Bandwidth validation
-EXPECT_GT(gpuResult.stats.transfers.bandwidthGBs(), 10.0)
-  << "Low transfer bandwidth - check PCIe link";
+// Copy rate: the declared copies' bytes over their time, against a floor
+// measured for those copies on this system's link
+EXPECT_GT(gpuResult.stats.transfers.bandwidthGBs(), MEASURED_FLOOR_GBS);
+
+// No SM-clock drop: isThrottling() compares NVML's readings, and a reading
+// NVML did not report is 0, so ask it only when the start, end and maximum
+// SM clocks are all there
+const auto& clocks = gpuResult.stats.clocks;
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+  EXPECT_FALSE(clocks.isThrottling());
+}
 ```
+
+The GPU guide's [Result Validation](GPU_GUIDE.md#result-validation) gives
+what each check can and cannot say.
 
 ---
 
@@ -611,7 +611,9 @@ Google Performance Tools integration.
 **Features:**
 
 - CPU profiling (sampling)
-- Heap profiling (`--profile-args heap`, or `both` for CPU + heap)
+- Heap profiling (`--profile-args heap`, or `both` for CPU + heap), in a build
+  with `-DVERNIER_LINK_TCMALLOC=ON`: the heap profiler is part of tcmalloc,
+  which replaces the allocator of the whole process
 
 **Usage:**
 
@@ -726,7 +728,8 @@ NVIDIA Nsight Compute integration.
 
 ```bash
 # nsys and ncu record a process only when they start it: bench run starts the
-# benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
+# benchmark under nsys (under ncu for --profile ncu, and for --profile-args
+# compute, replay or a selection of ncu's options)
 bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
 # Under ncu, with a section set, sections or metrics, or the replay list
 bench run ./MyGpuTest_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
@@ -747,78 +750,130 @@ Run directly with `--profile nsight`, without a tool around it, the run fails
 
 ## CSV Schema
 
-### CPU Columns
+This is the one description of the file `--csv` writes; the other guides link
+here.
 
-| Column           | Type   | Description                  |
-| ---------------- | ------ | ---------------------------- |
-| `test`           | string | Suite.TestName               |
-| `cycles`         | int    | Operations per repeat        |
-| `repeats`        | int    | Number of repeats            |
-| `warmup`         | int    | Warmup iterations used       |
-| `threads`        | int    | Worker thread count          |
-| `msgBytes`       | int    | Payload size (bytes)         |
-| `console`        | bool   | Console output enabled       |
-| `nonBlocking`    | bool   | Non-blocking mode enabled    |
-| `minLevel`       | string | Minimum log level            |
-| `wallMedian`     | double | Median latency (us)          |
-| `wallP10`        | double | 10th percentile (us)         |
-| `wallP90`        | double | 90th percentile (us)         |
-| `wallMin`        | double | Minimum latency (us)         |
-| `wallMax`        | double | Maximum latency (us)         |
-| `wallMean`       | double | Mean latency (us)            |
-| `wallStddev`     | double | Standard deviation (us)      |
-| `wallCV`         | double | Coefficient of variation     |
-| `callsPerSecond` | double | Throughput (ops/sec)         |
-| `stable`         | bool   | CV below adaptive threshold  |
-| `cvThreshold`    | double | Adaptive CV threshold used   |
-| `profileTool`    | string | Profiler used (if any)       |
-| `profileDir`     | string | Profiler artifact path       |
-| `timestamp`      | string | ISO 8601 timestamp           |
-| `gitHash`        | string | Short commit hash            |
-| `hostname`       | string | Machine hostname             |
-| `platform`       | string | Architecture (x86_64, arm64) |
+**The file.** One header line, then one row per published measurement, its
+columns in four groups, always in this order:
+
+1. the 22 base columns, in every file;
+2. `profileTool` and `profileDir`, only in a run given `--profile`;
+3. the four metadata columns, in every file;
+4. the 29 GPU columns, in a GPU benchmark's file: one whose binary ran
+   `PERF_GPU_MAIN()`, or has a test whose name holds `Gpu`, `GPU` or `CUDA`.
+
+Every row has as many cells as the header; a value a row does not have is an
+empty cell (a CPU row in a GPU benchmark's file leaves the GPU columns empty).
+A text cell (the test name, `minLevel`, the profile and metadata cells,
+`gpuModel` and `computeCapability`) holding a comma, a double quote or a line
+break is written in double quotes, its quotes doubled (RFC 4180), so read the
+file with a CSV reader that honours the quotes, not by splitting lines at
+commas. `bench` and
+`bench-plot` need the `test`, `wallMedian`, `wallCV` and `callsPerSecond`
+columns.
+
+**Row names.** A test that publishes one measurement names its row with its
+case name, `Suite.Test`. When it publishes several, each row is
+`Suite.Test/<label>`, with the label the measurement was given; a label that
+is empty, or repeats within the test, also gets `#1`, `#2` and so on in the
+order the measurements completed.
+
+**The `wall*` columns.** Each repeat gives one sample: its elapsed time over
+the operations it ran (`cycles`, or `cycles` times `threads` in
+`contentionRun()`), in microseconds. `wallMedian` to `wallStddev` describe the
+`repeats` samples, not single calls, and `wallCV` is their standard deviation
+over their mean. In a single-device GPU row each sample is one repeat's
+round trip: its copies in, one launch and its copies out (the GPU guide's
+[What Gets Measured?](GPU_GUIDE.md#what-gets-measured)); in a multi-GPU row it
+is the first device's time per launch in that repeat.
+
+### Base Columns
+
+| Column                   | Type   | Description                                                                                                                                      |
+| ------------------------ | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `test`                   | string | The row's name (above)                                                                                                                           |
+| `cycles`                 | int    | Operations per repeat, per thread in `contentionRun()`; under `--target-time`, the count `throughputLoop()` or `contentionRun()` calibrated      |
+| `repeats`                | int    | Repeats, one sample each                                                                                                                         |
+| `warmup`                 | int    | Times `warmup()` ran its function (`--warmup`; when that is 0, 5, 3 or 1 by `cycles`), 1 when the test did not call it; in a GPU row, `--warmup` |
+| `threads`                | int    | Threads `contentionRun()` started; 1 for `measured()`, `throughputLoop()` and GPU rows                                                           |
+| `msgBytes`               | int    | The configuration's `msgBytes` (`--msg-bytes`, default 64), which sets `cvThreshold`                                                             |
+| `console`                | 0/1    | The configuration's `console` (`--console`)                                                                                                      |
+| `nonBlocking`            | 0/1    | The configuration's `nonBlocking` (`--nonblocking`)                                                                                              |
+| `minLevel`               | string | The configuration's `minLevel` (`--min-level`, default `INFO`)                                                                                   |
+| `wallMedian`             | double | Median sample (us per operation)                                                                                                                 |
+| `wallP10`, `wallP90`     | double | 10th and 90th percentiles of the samples (us)                                                                                                    |
+| `wallP99`, `wallP999`    | double | 99th and 99.9th percentiles of the samples (us)                                                                                                  |
+| `wallMin`, `wallMax`     | double | Smallest and largest sample (us)                                                                                                                 |
+| `wallMean`, `wallStddev` | double | Mean and standard deviation of the samples (us)                                                                                                  |
+| `wallCV`                 | double | `wallStddev` over `wallMean`, a fraction                                                                                                         |
+| `callsPerSecond`         | double | 1e6 / `wallMedian`                                                                                                                               |
+| `stable`                 | 0/1    | 1 when `wallCV` is below `cvThreshold`                                                                                                           |
+| `cvThreshold`            | double | 0.20 for `msgBytes` under 64, 0.10 under 256, 0.05 under 1024, else 0.03; under `--quick` 1.5 times that, at most 0.30                           |
 
 Under Nsight Compute (ncu) no row is timed: every row leaves the `wall*`
 columns, `callsPerSecond` and `stable` empty, since ncu's instrumentation adds
 to what the harness would measure
 ([GPU guide](GPU_GUIDE.md#using-nsight-compute)).
 
+### Profile Columns
+
+Only in a run given `--profile`:
+
+| Column        | Type   | Description                                                  |
+| ------------- | ------ | ------------------------------------------------------------ |
+| `profileTool` | string | The backend's name (`perf`, `memcheck`, ...)                 |
+| `profileDir`  | string | The case's artifact folder; empty where the backend has none |
+
+### Metadata Columns
+
+| Column      | Type   | Description                                                                                                 |
+| ----------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `timestamp` | string | When the row was built, ISO 8601 in UTC (`2026-11-14T19:27:31Z`)                                            |
+| `gitHash`   | string | `git describe --always --dirty --tags`, run in the benchmark's working directory; `unknown` when that fails |
+| `hostname`  | string | The machine's host name                                                                                     |
+| `platform`  | string | The build's architecture: `x86_64`, `aarch64`, `arm`, `x86`, `riscv` or `unknown`                           |
+
 ### GPU Columns
 
-Additional columns for GPU tests. Under Nsight Compute (ncu) a GPU row also
-leaves `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`,
-`multiGpuEfficiency` and `p2pBandwidthGBs` empty (see CPU Columns).
+What each holds in a single-device measurement's row; the GPU guide defines
+them ([Understanding GPU Metrics](GPU_GUIDE.md#understanding-gpu-metrics)),
+and [walkthrough 19](../demo/docs/19_CUPTI_KERNEL_METRICS.md) reads them in
+a run. Under Nsight Compute (ncu) a GPU row also leaves `kernelTimeUs`,
+`transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`, `multiGpuEfficiency` and
+`p2pBandwidthGBs` empty ([Base Columns](#base-columns)).
 
-| Column              | Type   | Description                 |
-| ------------------- | ------ | --------------------------- |
-| `gpuModel`          | string | GPU device name             |
-| `computeCapability` | string | CUDA compute capability     |
-| `kernelTimeUs`      | double | GPU kernel time (us)        |
-| `transferTimeUs`    | double | H2D + D2H time (us)         |
-| `h2dBytes`          | int64  | Host-to-device bytes        |
-| `d2hBytes`          | int64  | Device-to-host bytes        |
-| `speedupVsCpu`      | double | GPU/CPU speedup ratio       |
-| `memBandwidthGBs`   | double | Memory bandwidth (GB/s)     |
-| `occupancy`         | double | Kernel occupancy [0.0-1.0]  |
-| `smClockMHz`        | double | SM clock frequency          |
-| `throttling`        | bool   | Thermal throttling detected |
+| Column              | Type   | Description                                                                                                                     |
+| ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `gpuModel`          | string | The device's name                                                                                                               |
+| `computeCapability` | string | Major.minor (`8.9`)                                                                                                             |
+| `kernelTimeUs`      | double | One launch: the median, over the repeats, of the launches' time over their count (us)                                           |
+| `transferTimeUs`    | double | The median host-to-device time plus the median device-to-host time (us); 0 when the test declares no copies                     |
+| `h2dBytes`          | int64  | Bytes the test declares copying to the device each repeat                                                                       |
+| `d2hBytes`          | int64  | Bytes the test declares copying back each repeat                                                                                |
+| `speedupVsCpu`      | double | The case's or its suite's CPU baseline (`cpuBaseline()`) over the median round trip; empty without one                          |
+| `memBandwidthGBs`   | double | The declared copies' bytes over `transferTimeUs`, in GB/s; empty without copies                                                 |
+| `occupancy`         | double | An estimate of the occupancy the launch shape allows [0-1], not a measurement; empty without `.withLaunchConfig()`              |
+| `smClockMHz`        | int    | The SM clock NVML read at the window's end (MHz)                                                                                |
+| `throttling`        | 0/1    | 1 when the SM clock fell more than 10% from the window's start to its end; empty unless NVML read both and the maximum SM clock |
 
 ### Power and Thermal Columns
 
 | Column              | Type   | Description                                              |
 | ------------------- | ------ | -------------------------------------------------------- |
 | `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) |
-| `powerLimitW`       | double | Configured power-cap limit (watts)                       |
+| `powerLimitW`       | double | The power limit (W)                                      |
 | `temperatureC`      | int    | GPU temperature at the window's end (C)                  |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  |
+| `temperatureDeltaC` | int    | Temperature at the end minus at the start (C)            |
 
-Source: NVML, read at the measured window's start and end, each cell where
-NVML reports what it needs. `powerDrawW` is the endpoint reading: NVML's power
-reading taken at the window's end, which NVIDIA's NVML reference describes as
-a one-second average on Ampere (except GA100) and newer GPUs and an
-instantaneous reading on GA100 and older; neither is an average over the
-measured window. Vernier publishes it only for a window of at least 1.5 s, a
-rule of its own: a shorter window's cell is empty and the run says why.
+Source: NVML, at the measured window's start and end. A cell stays empty when
+NVML did not report the readings it needs (on the Jetson AGX Thor it reports
+none of them), and the run names the missing readings on stderr. `powerDrawW`
+is the endpoint reading: NVML's power reading taken at the window's end, which
+NVIDIA's NVML reference describes as a one-second average on Ampere (except
+GA100) and newer GPUs and an instantaneous reading on GA100 and older; neither
+is an average over the measured window. Vernier publishes it only for a window
+of at least 1.5 s, a rule of its own: a shorter window's cell is empty and the
+run says why.
 
 ### CUPTI In-Process Kernel Metrics
 
@@ -830,20 +885,26 @@ rule of its own: a shorter window's cell is empty and the run says why.
 | `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             |
 | `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                |
 
-Source: CUPTI Activity API. Populated when libcupti is linked at build
-time; no `--profile` flag required. After a kernel measurement's timed
-repeats, the harness calls the measured callable `cycles` times more, at most
-1000, untimed, with CUPTI recording kernels, and the five cells describe those
-launches; no timed launch runs while CUPTI records kernels.
+Source: CUPTI's Activity API, in every GPU run; no `--profile` flag is
+needed. After a kernel measurement's timed repeats, the harness calls the
+measured callable `cycles` times more, at most 1000, untimed, with CUPTI
+recording kernels, and the five cells describe those launches; no timed launch
+runs while CUPTI records kernels. The cells stay empty where the collector
+cannot or must not run (a build without CUPTI, `VERNIER_DISABLE_CUPTI=1`, an
+nsys or ncu session, CUPTI refusing the collector, or a CUPTI window of the
+process that did not stop recording kernels or flush its records) and
+for a batch whose records are not known to be complete, and the run says why
+on stderr
+([CUPTI in-process kernel metrics](GPU_GUIDE.md#cupti-in-process-kernel-metrics)).
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description                |
-| -------------------- | ------ | -------------------------- |
-| `deviceId`           | int    | Primary CUDA device ID     |
-| `deviceCount`        | int    | Number of GPUs used        |
-| `multiGpuEfficiency` | double | Not measured: always empty |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
+| Column               | Type   | Description                                                                                                                                     |
+| -------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deviceId`           | int    | In a single-device row, the device named with `withDeviceId()`, empty when the case's own device (`--gpu-device`) ran it; -1 in a multi-GPU row |
+| `deviceCount`        | int    | Number of GPUs used                                                                                                                             |
+| `multiGpuEfficiency` | double | Not measured: always empty                                                                                                                      |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth                                                                                                                          |
 
 ### Unified Memory Columns
 
@@ -880,19 +941,19 @@ a run whose tests pass exits with status 4. See the GPU guide's
 
 ### Output Flags
 
-| Flag              | Type   | Default  | Description                        |
-| ----------------- | ------ | -------- | ---------------------------------- |
-| `--csv PATH`      | string | -        | CSV output path                    |
-| `--console`       | bool   | false    | Echo to console (when relevant)    |
-| `--nonblocking`   | bool   | false    | Non-blocking mode (when relevant)  |
-| `--min-level STR` | string | `"INFO"` | DEBUG\|INFO\|WARNING\|ERROR\|FATAL |
+| Flag              | Type   | Default  | Description                                 |
+| ----------------- | ------ | -------- | ------------------------------------------- |
+| `--csv PATH`      | string | -        | CSV output path ([CSV Schema](#csv-schema)) |
+| `--console`       | bool   | false    | Echo to console (when relevant)             |
+| `--nonblocking`   | bool   | false    | Non-blocking mode (when relevant)           |
+| `--min-level STR` | string | `"INFO"` | DEBUG\|INFO\|WARNING\|ERROR\|FATAL          |
 
 ### Profiling Flags
 
 | Flag                     | Type   | Default | Description                                                                                                                                                                                                                                                                                                                                                                                        |
 | ------------------------ | ------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                                                                                                                                                                            |
-| `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                                                                                                                                                                                |
+| `--profile-args ARGS`    | string | -       | The profile's mode, or for `ncu` and nsight's compute route a set, sections and metrics, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                                                                                                           |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                                                                                                                                                                          |
 | `--profile-test-timeout` | int    | 300     | Watchdog seconds per measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off; a value not a whole number from 0 exits 2. A timer if eligible (Linux and glibc 2.34+ at build, single-threaded per glibc, a usable signal, the timer set up), else a parked thread. Not `contentionRun()` or GPU runs. [Troubleshooting](TROUBLESHOOTING.md#test-hangs--never-completes) |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles`                                                                                                                                                        |
@@ -956,15 +1017,16 @@ Access global configuration parsed from command-line flags. Used for profiler in
 ### Metadata Capture
 
 ```cpp
-// Capture all metadata
+// Capture all metadata (cached: git, host name and platform once per
+// process; the timestamp each call)
 std::tuple<std::string, std::string, std::string, std::string>
 captureMetadata(bool cacheMetadata = true);
 
 // Individual functions
-std::string captureTimestamp();   // ISO 8601 format
-std::string captureGitHash();     // Short commit hash
+std::string captureTimestamp();   // ISO 8601, UTC
+std::string captureGitHash();     // git describe --always --dirty --tags, or "unknown"
 std::string captureHostname();    // Machine name
-std::string capturePlatform();    // Architecture (x86_64, arm64, etc.)
+std::string capturePlatform();    // Architecture (x86_64, aarch64, arm, x86, riscv, unknown)
 ```
 
 **Usage:**
@@ -1026,9 +1088,12 @@ auto result = perf.throughputLoop([&] {
 ## Thread Safety
 
 - **PerfCase:** Not thread-safe (create one per test)
-- **GpuPerfCase:** Not thread-safe (create one per test)
-- **contentionRun:** Thread-safe (uses internal synchronization)
-- **PerfRegistry:** Thread-safe (uses mutex for CSV updates)
+- **PerfGpuCase:** Not thread-safe (create one per test)
+- **contentionRun:** calls `worker` from `threads()` threads at once and
+  synchronizes only their start and their end; the worker keeps its own
+  shared state safe (atomics or locks)
+- **PerfRegistry:** Thread-safe: a mutex guards the rows measurements publish
+  and the listeners take at each test's end
 
 **Best practices:**
 
@@ -1162,21 +1227,18 @@ PERF_TEST(Memory, Bandwidth) {
 ### Multi-threaded Scalability
 
 ```cpp
-PERF_TEST(SharedResource, Scalability) {
+PERF_CONTENTION(SharedResource, Scalability) {
   PERF_GUARD(perf);
 
-  std::atomic<int64_t> counter{0};
+  std::atomic<std::int64_t> counter{0};
 
-  auto result = perf.contentionRun([&](int threadId) {
-    for (int i = 0; i < perf.cycles(); ++i) {
-      counter.fetch_add(1);
-    }
-  }, "contention");
+  // The worker takes no arguments and makes one call; contentionRun()
+  // supplies the loop and the threads
+  auto result = perf.contentionRun([&] { counter.fetch_add(1); }, "contention");
 
-  double efficiency = result.callsPerSecond /
-                     (perf.threads() * expectedSingleThreadThroughput);
-
-  std::printf("Parallel efficiency: %.1f%%\n", efficiency * 100);
+  // Run it with --threads 1 and with --threads N: the ratio of the two
+  // callsPerSecond values is the scaling
+  std::printf("%d threads: %.0f calls/s\n", perf.threads(), result.callsPerSecond);
 }
 ```
 

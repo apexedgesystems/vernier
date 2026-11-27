@@ -627,9 +627,10 @@ Three things check what this page shows, and all fail loudly:
 
 - The helper's own tests, in `TestDemoHelpers`, run their binary on a probe
   case that uses the helper, plainly and under the tool, and fail if the
-  probe runs in the plain run or skips under the tool. The probe itself is
-  reported as skipped by `ctest` in an ordinary run, which is the helper
-  working.
+  probe runs in the plain run or skips under the tool. The probe itself,
+  `SkipUnlessUnderComputeSanitizerProbe.RunsOnlyUnderTheTool`, is
+  compiled into their program and not registered with `ctest`: run alone, it
+  only skips.
 - The example's unit tests hold every version of SAXPY to the CPU loop's
   answers, under the same `demo` label.
 

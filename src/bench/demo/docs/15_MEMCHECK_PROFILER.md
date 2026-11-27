@@ -3,10 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), plus a deliberately wrong join private to the demo
-**Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; valgrind 3.24.0. The doctor's rows come from 2026-10-03
-(UTC), a later tree at the same version.
+**Tools:** valgrind 3.24.0
 
 ## Overview
 
@@ -124,13 +121,13 @@ std::string joinOffByOne(const std::vector<std::string>& parts, char sep) {
 ```
 
 The buffer has room for the characters and none for the terminator, so the
-terminator is written one byte past the end, and constructing the string
-from the C string reads it back from there. The buffer is freed and the
-right string returned: under memcheck every call for this page returned
-exactly what `joinV1` returns, and so did a plain run on an x86-64 laptop,
-where the byte past the end landed in what the C library's allocator keeps
-after a block of that size. Nothing that checks the answer can tell, and
-nothing that times the call can either.
+terminator is written one byte past the end, and constructing the string from
+the C string reads it back from there. The buffer is freed and the right string
+returned: under memcheck every call returns exactly what `joinV1` returns (the
+case checks each answer, and passes in step 2), and so did a plain run on an
+x86-64 laptop, where the byte past the end landed in what the C library's
+allocator keeps after a block of that size. Nothing that checks the answer can
+tell, and nothing that times the call can either.
 
 It is not a version of the shared example. The example's versions are held
 to the same answers by its unit tests and are safe to run anywhere; this one
@@ -354,9 +351,10 @@ What not to conclude:
   read that one.
 - **That the addresses mean anything.** `0x122784`, `0x4fe51b2` and the rest
   belong to this build and this run.
-- **That the line numbers travel.** They are this revision's
-  `12_MemcheckProfiler_OffByOne.cpp`; a build of an edited file names other
-  lines. The names travel: `joinOffByOne`, `operator new[]`, `strlen`.
+- **That the line numbers travel.** They are the lines of
+  `12_MemcheckProfiler_OffByOne.cpp` as it ships; a build of an edited file
+  names other lines. The names travel: `joinOffByOne`, `operator new[]`,
+  `strlen`.
 
 ## Step 4: Confirm the Fix
 
@@ -480,13 +478,13 @@ which is 0 in both cases here.
 | the write                | `Invalid write of size 1`, once per call, `0 bytes after a block of size 7,490`, at line 32 of the wrong join's file | should match: it depends on the code, not the machine; the same write after the same block on an x86-64 laptop with GCC 11.4 and with clang 21, at line 32 but in clang 21's Release build, where valgrind names line 27 ([below](#if-it-does-not-match)) |
 | the read                 | `Invalid read of size 1` in `strlen`, once per call, at the same address                                             | the same wherever memcheck replaces the C library's `strlen`, as it did on x86-64; a `strlen` it does not replace may read more bytes at once                                                                                                             |
 | errors and contexts      | 6 errors from 2 contexts                                                                                             | 6 errors; 6 contexts where the compiler unrolled the case's loop (clang 21 on x86-64 did), because each call is then its own call site                                                                                                                    |
-| what `joinV1` reports    | 0 errors from 0 contexts, in every run for this page and in five more taken for it                                   | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                                                                                                                                      |
-| `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over the session's twelve runs of step 1                                                    | tens of times in an optimized build                                                                                                                                                                                                                       |
+| what `joinV1` reports    | 0 errors from 0 contexts, in every run of it on this rig                                                             | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                                                                                                                                      |
+| `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over twelve runs of step 1's command                                                        | tens of times in an optimized build                                                                                                                                                                                                                       |
 | memcheck's cost          | one call of `joinV1` 110 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                                                                                                                                         |
 | absolute times           | 921.2 and 20.8 us/call in step 1; 915.8 to 1013.0 and 19.8 to 21.1 over twelve runs                                  | will differ                                                                                                                                                                                                                                               |
 
-The twelve runs are step 1's command run twelve times in one session on
-this rig, the reference capture and this page's run among them. That range
+The twelve runs are step 1's command run twelve times on this rig, the
+reference's run and this page's among them. That range
 describes those runs; it is not a bound a run has to meet, and another run
 of the same command can land outside it. The memcheck lines are the readings
 to carry elsewhere.
@@ -627,14 +625,13 @@ to carry elsewhere.
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo:
+A reference CSV from this rig ships with the demo:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/15_memcheck_profiler.csv run.csv
 ```
 
-Output for step 1's `run.csv`, printed by the `bench` CLI built from the tree
-this page ships in (`bench 1.0.3`):
+Output for step 1's `run.csv`:
 
 ```
 
@@ -650,25 +647,23 @@ Memcheck.JoinV1      20.88860      20.82130    -0.06730     -0.3%      1.8%     
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by the same binary on this board immediately
-before step 1's run (the two CSVs' timestamps are one second apart), and
-nothing changed between them: `joinV0` came out -4.0% against it and
-`joinV1` came out -0.3% against it, both inside the 5% threshold the labels
+The reference is a run of step 1's command by the same binary on this board, and
+nothing changed between it and step 1's run: `joinV0` came out -4.0% against it
+and `joinV1` came out -0.3% against it, both inside the 5% threshold the labels
 are drawn at, so both rows say `neutral`. That is this pair of runs, not a
-property of the code. The CSVs' `hostname` column records the name visible
-to the process that captured each: this reference was captured in a UTS
-namespace named `pi4` on the same rig, so it records `pi4`, while the rig's
-ordinary captures, step 1's `run.csv` among them, record `raspberrypi`. As
-the note under the table says, a label compares two runs' medians; it is
-not a significance test, and `Base CV` and `Cand CV` are each run's own
-spread, which says nothing about the spread between runs: 0.1% and 0.2% for
-`joinV0` here. Over the session's twelve runs of step 1,
-`joinV0`'s median ranged from 915.8 to 1013.0 us, 10.6%, and `joinV1`'s from
-19.8 to 21.1 us, 6.7%, with nothing changed, so a run of unchanged code can
-land on either side of the threshold; `joinV0`'s median is the noisiest
-measurement on this page. Read the medians and the CVs, and compare the
-ratio. The CSV holds times only; what memcheck found is checked by
-`Memcheck.FindsTheOffByOne`, below.
+property of the code. The CSVs' `hostname` column records the host name the
+writing process saw: the reference ran in a UTS namespace named `pi4` on this
+rig and records `pi4`, and step 1's `run.csv` ran with the board's host name and
+records `raspberrypi`. As the note under the table says, a label compares two
+runs' medians; it is not a significance test, and `Base CV` and `Cand CV` are
+each run's own spread, which says nothing about the spread between runs: 0.1%
+and 0.2% for `joinV0` here. Over twelve runs of step 1's command, with the same
+build and settings, `joinV0`'s median ranged from 915.8 to 1013.0 us, 10.6%, and
+`joinV1`'s from 19.8 to 21.1 us, 6.7%, so a run of unchanged code can land on
+either side of the threshold; `joinV0`'s median is the noisiest measurement on
+this page. Read the medians and the CVs, and compare the ratio. The CSV holds
+times only; what memcheck found is checked by `Memcheck.FindsTheOffByOne`,
+below.
 
 ## What Keeps This Page True
 
@@ -729,10 +724,7 @@ ctest --test-dir build -L demo
 ```
 
 The demo's two timing tests are not registered: what they measure belongs to
-the machine they run on. This repository has no continuous-integration lane
-on the reference board, so before a release the page's commands are run on
-the rig by hand, and the page and its reference CSV are re-captured when
-what they show changes.
+the machine they run on; run them on the rig with the page's commands.
 
 ## See Also
 

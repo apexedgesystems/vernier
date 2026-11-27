@@ -3,8 +3,7 @@
  * @brief PerfCase::measured() API validation
  *
  * This test suite validates the measured() API, which provides single-shot
- * timing measurements. This API was previously untested and represents a
- * critical gap in framework coverage.
+ * timing measurements.
  *
  * Features tested:
  *  - measured() basic functionality

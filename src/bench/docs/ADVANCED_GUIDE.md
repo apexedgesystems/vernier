@@ -378,54 +378,10 @@ values in order, so the value itself is in the `msgBytes` column, not the name.
 
 ## CSV Schema Reference
 
-### Complete CPU Test Schema
-
-All CPU performance tests produce CSV with these columns:
-
-#### Base Columns (Always Present)
-
-| Column           | Type   | Description                 | Example                  |
-| ---------------- | ------ | --------------------------- | ------------------------ |
-| `test`           | string | Test name (Suite.Name)      | "MyComponent.Throughput" |
-| `cycles`         | int    | Operations per repeat       | 10000                    |
-| `repeats`        | int    | Samples collected           | 10                       |
-| `warmup`         | int    | Warmup iterations           | 1000                     |
-| `threads`        | int    | Thread count                | 1                        |
-| `msgBytes`       | int    | Payload size (bytes)        | 1024                     |
-| `console`        | bool   | Console output enabled      | true                     |
-| `nonBlocking`    | bool   | Non-blocking I/O mode       | false                    |
-| `minLevel`       | string | Minimum log level           | "INFO"                   |
-| `wallMedian`     | double | Median per-call time        | 0.543                    |
-| `wallP10`        | double | 10th percentile             | 0.512                    |
-| `wallP90`        | double | 90th percentile             | 0.587                    |
-| `wallMin`        | double | Minimum time                | 0.498                    |
-| `wallMax`        | double | Maximum time                | 0.623                    |
-| `wallMean`       | double | Mean time                   | 0.546                    |
-| `wallStddev`     | double | Standard deviation          | 0.023                    |
-| `wallCV`         | double | Coefficient of variation    | 0.042                    |
-| `callsPerSecond` | double | Throughput                  | 1843317.0                |
-| `stable`         | bool   | CV below adaptive threshold | 1                        |
-| `cvThreshold`    | double | Adaptive CV threshold used  | 0.05                     |
-
-#### Metadata Columns
-
-| Column        | Type   | Description        | Example                |
-| ------------- | ------ | ------------------ | ---------------------- |
-| `profileTool` | string | Profiler used      | "perf"                 |
-| `profileDir`  | string | Artifact directory | "./perf-data"          |
-| `timestamp`   | string | ISO 8601 timestamp | "2024-11-02T10:30:45Z" |
-| `gitHash`     | string | Git commit (short) | "a3f9c2b"              |
-| `hostname`    | string | Machine name       | "perf-test-01"         |
-| `platform`    | string | Architecture       | "x86_64"               |
-
-**Note:** Memory bandwidth analysis from `MemoryProfile` is printed to the console
-during test execution but is not exported to CSV columns. The CSV captures timing
-and throughput metrics. For bandwidth data, parse the console output or add custom
-columns via the `PerfRegistry`.
-
-#### GPU-Specific Columns
-
-See GPU_GUIDE.md for complete GPU column schema.
+`--csv` writes one row per measurement. The API reference's
+[CSV Schema](API_REFERENCE.md#csv-schema) gives the columns, their order,
+what each holds and when a cell is empty. `MemoryProfile`'s bandwidth is
+printed to the console, not written to the file.
 
 ### Using CSV Data
 
@@ -451,11 +407,29 @@ separately. The labels compare two runs; they are not a significance test.
 bench compare baseline.csv candidate.csv --threshold 5
 ```
 
-**Filter by test:**
+**Filter by test**: the header line, which `bench` and `bench-plot` read the
+columns from, and the rows whose test starts with a name. A CSV reader keeps
+a quoted test name (a measurement's label may hold a comma) whole, where a
+line-based filter would drop it or split it:
 
 ```bash
-grep "MyComponent.Encode" results.csv > encode_only.csv
+python3 -c '
+import csv, sys
+path, prefix = sys.argv[1:]
+rows = csv.DictReader(open(path, newline=""))
+out = csv.DictWriter(sys.stdout, rows.fieldnames)
+out.writeheader()
+for row in rows:
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    if row["test"].startswith(prefix):
+        out.writerow(row)
+' results.csv MyComponent.Encode > encode_only.csv
 ```
+
+The file it writes ends each record with CR LF, CSV's standard line end,
+where the harness's own file ends them with LF; `bench` and `bench-plot` read
+both.
 
 ---
 
@@ -539,35 +513,37 @@ must be started by that tool: `bench run --profile <name>` starts it (for
 every name marked so but `rocprof`), or you start it yourself; a run started
 without it fails with the command that would start it.
 
-| Profiler             | Layer | Purpose                                          | Requirements                                                           | Overhead |
-| -------------------- | ----- | ------------------------------------------------ | ---------------------------------------------------------------------- | -------- |
-| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | perf for the running kernel; `perf_event_paranoid` 2 or lower, or root | ~5%      |
-| `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                                                          | ~10%     |
-| `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind, under the tool                                               | ~20-50x  |
-| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                 | <1%      |
-| `rapl`               | CPU   | Package energy per call                          | Intel CPU, msr driver, read access to `/dev/cpu/0/msr` (see below)     | <1%      |
-| `massif`             | CPU   | Heap usage timeline                              | valgrind, under the tool                                               | ~20x     |
-| `memcheck`           | CPU   | Memory errors and leaks                          | valgrind, under the tool                                               | ~20x     |
-| `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
-| `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
-| `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                | jemalloc built with `--enable-prof`, preloaded                         | 1.0-1.7x |
-| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
-| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
-| `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
+In **Writes**, `<case>` is the test's name, `Suite.Test`: a per-case folder
+is created in the working directory, and the folder `bench run` creates,
+`<binary>.<profiler>/`, in `bench-out/`; `--profile-output-dir` moves either
+root. **Cost** is what a walkthrough measured, on the rig it names; it depends
+on the code and the machine, so time one profiled call before sizing a run.
+Under Nsight Compute (`ncu`, and `nsight` on its compute route) no row of the
+run is timed ([Using Nsight Compute](GPU_GUIDE.md#using-nsight-compute)).
 
-jemalloc's overhead is measured in the
-[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs):
-on the Raspberry Pi 4 rig, a Release build of the `join` example timed under
-one jemalloc build with profiling off and with `bench run`'s options on,
-1.01x for `joinV1`, which allocates 7.5 KB per call, and 1.73x for `joinV0`,
-which allocates 11.8 MB per call. It grows with the bytes allocated per
-second.
+| Profiler             | Layer | Purpose                                                             | Requirements                                                                          | Writes                                                                                                                                                                                       | Cost                                                                                                                            |
+| -------------------- | ----- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)                     | perf for the running kernel; `perf_event_paranoid` 2 or lower, or root                | `<case>.perf/stat.txt`; `perf.data` with `record`                                                                                                                                            | none seen in `stat` mode: 919.7 against 926.9 to 1,002.6 us a call, Pi 4 ([02](../demo/docs/02_PERF_PROFILER.md))               |
+| `gperf`              | CPU   | gperftools sampling (CPU; heap with `--profile-args heap`)          | libgperftools; heap mode also a build with `-DVERNIER_LINK_TCMALLOC=ON`               | `<case>.gperf/cpu.prof`; `heap.<N>.heap` in heap mode                                                                                                                                        | about 1%, within the runs' own spread, at 100 samples a second, Pi 4 ([03](../demo/docs/03_GPERF_PROFILER.md))                  |
+| `callgrind`          | CPU   | Deterministic instruction counts                                    | valgrind, under the tool                                                              | `<binary>.callgrind/callgrind.out`                                                                                                                                                           | 51x and 94x, Pi 4 ([07](../demo/docs/07_CALLGRIND_PROFILER.md))                                                                 |
+| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)                        | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                                | `<case>.bpf/<script>.out.text`                                                                                                                                                               | per traced event: about 1.5 us a `write()` under `write_latency.bt`, Pi 4 ([09](../demo/docs/09_BPFTRACE_PROFILER.md))          |
+| `rapl`               | CPU   | Package energy per call                                             | Intel CPU, msr driver, read access to `/dev/cpu/0/msr` (see below)                    | `<case>.rapl/energy.txt`                                                                                                                                                                     | two register reads a window, outside the timed calls ([08](../demo/docs/08_RAPL_PROFILER.md))                                   |
+| `massif`             | CPU   | Heap usage timeline                                                 | valgrind, under the tool                                                              | `<binary>.massif/massif.out`                                                                                                                                                                 | 2.3x and 6.2x, Pi 4 ([14](../demo/docs/14_MASSIF_PROFILER.md))                                                                  |
+| `memcheck`           | CPU   | Memory errors and leaks                                             | valgrind, under the tool                                                              | `<binary>.memcheck/memcheck.log`                                                                                                                                                             | about 110x, Pi 4 ([15](../demo/docs/15_MEMCHECK_PROFILER.md))                                                                   |
+| `helgrind`           | CPU   | Data races and lock-order violations; DRD with `--profile-args drd` | valgrind, under the tool                                                              | `<binary>.helgrind/helgrind.log`                                                                                                                                                             | hundreds of times with valgrind's fair scheduler, which `bench run` asks for, Pi 4 ([20](../demo/docs/20_HELGRIND_PROFILER.md)) |
+| `offcpu`             | CPU   | Off-CPU stack profiling                                             | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs                       | `<case>.offcpu/offcpu.txt`                                                                                                                                                                   | not measured: timed medians with and without it overlapped, Pi 4 ([16](../demo/docs/16_OFFCPU_PROFILER.md))                     |
+| `heaptrack`          | CPU   | Heap allocations and their call stacks                              | heaptrack, under the tool                                                             | `<binary>.heaptrack/run.zst` (or `run.gz`)                                                                                                                                                   | 1.4x and 4.3x, growing with the allocation rate, Pi 4 ([21](../demo/docs/21_HEAPTRACK_PROFILER.md))                             |
+| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                                   | jemalloc built with `--enable-prof`, preloaded                                        | `<binary>.jemalloc/jeprof.<pid>.<n>.f.heap`                                                                                                                                                  | 1.01x and 1.73x, growing with the bytes allocated, Pi 4 ([22](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs))        |
+| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)                               | nsys (Systems) or ncu (the compute modes), under the tool                             | `<binary>.nsight/profile.nsys-rep` and the nsys summaries; `kernel_profile.ncu-rep` there with `--profile-args compute` or a selection, `kernel_replay.ncu-rep` with `--profile-args replay` | none seen: 3,367 against 3,439 us a call, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                       |
+| `ncu`                | GPU   | Nsight Compute per-kernel counters                                  | ncu, under the tool; the GPU's performance counters, which a driver can keep for root | `<binary>.ncu/kernel_profile.ncu-rep`; `kernel_replay.ncu-rep` there with `--profile-args replay`                                                                                            | about a second a profiled launch, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                               |
+| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck                    | compute-sanitizer (CUDA toolkit), under the tool                                      | `<binary>.compute-sanitizer/sanitizer.log`                                                                                                                                                   | 54x to 55x, Thor; about 148x, RTX 5000 Ada laptop ([17](../demo/docs/17_COMPUTE_SANITIZER.md))                                  |
+| `rocprof`            | GPU   | AMD ROCm GPU profiler, not validated on AMD hardware                | rocprof (ROCm), under the tool; never reported ready                                  | rocprof's files, where its `-o` says                                                                                                                                                         | not measured ([18](../demo/docs/18_ROCPROF_PROFILER.md))                                                                        |
 
-CUPTI activity counters (per-launch register count, static + dynamic shared
-memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
-test without requiring `--profile` -- spawning external `ncu` is unnecessary
-for those metrics.
+CUPTI's kernel metrics (registers per thread, static and dynamic shared
+memory, the launch count) fill five CSV columns of a GPU benchmark's rows
+without `--profile` and without running `ncu`, except where CUPTI is
+unavailable or nsys or ncu profiles the process; those cells then stay empty
+([CUPTI In-Process Kernel Metrics](API_REFERENCE.md#cupti-in-process-kernel-metrics)).
 
 ### Window sizing without the guesswork
 
@@ -696,7 +672,12 @@ warmup = 2;      // Extra warmup to stabilize
 
 **Performance impact:**
 
-- 30-100x faster than full run
+- With the default counts, 25,000 measured calls instead of 100,000
+  (5,000 x 5 against 10,000 x 10, per thread under `contentionRun()`). The
+  time this saves depends on the workload: work that grows with the calls
+  takes a quarter as long, while work done once per repeat inside the
+  measured window, such as a GPU test's copies or the start and join of
+  `contentionRun()`'s threads, only halves
 - Less statistical confidence (higher CV%)
 - May miss outliers/edge cases
 - Same CSV format (compatible with analysis tools)
@@ -1078,87 +1059,17 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU CSV Schema
 
-Complete GPU-specific CSV columns:
-
-#### GPU Performance Columns
-
-| Column              | Type   | Description                 | Example                 |
-| ------------------- | ------ | --------------------------- | ----------------------- |
-| `gpuModel`          | string | GPU device name             | "NVIDIA A100-SXM4-40GB" |
-| `computeCapability` | string | CUDA compute capability     | "8.0"                   |
-| `kernelTimeUs`      | double | GPU kernel execution time   | 123.45                  |
-| `transferTimeUs`    | double | H2D + D2H transfer time     | 45.67                   |
-| `h2dBytes`          | int64  | Host-to-device bytes        | 4194304                 |
-| `d2hBytes`          | int64  | Device-to-host bytes        | 4194304                 |
-| `speedupVsCpu`      | double | GPU vs CPU speedup          | 15.3                    |
-| `memBandwidthGBs`   | double | Memory bandwidth            | 850.2                   |
-| `occupancy`         | double | Kernel occupancy [0-1]      | 0.82                    |
-| `smClockMHz`        | double | SM clock frequency          | 1410.0                  |
-| `throttling`        | bool   | Thermal throttling detected | false                   |
-
-#### Power and Thermal Columns (NVML)
-
-| Column              | Type   | Description                                              | Example |
-| ------------------- | ------ | -------------------------------------------------------- | ------- |
-| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) | 62.50   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)                       | 80.0    |
-| `temperatureC`      | int    | GPU temperature at the window's end (C)                  | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  | 2       |
-
-#### CUPTI In-Process Kernel Metrics
-
-| Column                  | Type | Description                                                  | Example |
-| ----------------------- | ---- | ------------------------------------------------------------ | ------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats | 1000    |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  | 16      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                            | 16      |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             | 0       |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                | 0       |
-
-CUPTI columns populate automatically on every GPU run when libcupti is
-linked at build time; no `--profile` flag required. They come from an untimed
-batch of the measured callable's launches after the timed repeats: `cycles`
-calls, at most 1000 (the example's test ran 10000 cycles). See
-[demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
-
-#### Multi-GPU Columns
-
-| Column               | Type   | Description            | Present When    |
-| -------------------- | ------ | ---------------------- | --------------- |
-| `deviceId`           | int    | Primary device ID      | Multi-GPU tests |
-| `deviceCount`        | int    | Number of GPUs used    | Multi-GPU tests |
-| `multiGpuEfficiency` | double | Not measured           | Never           |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth | Peer copy timed |
-
-#### Unified Memory Columns
-
-| Column              | Type   | Description                                | Present When   |
-| ------------------- | ------ | ------------------------------------------ | -------------- |
-| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults | `--capture-um` |
-| `umH2DMigrations`   | int64  | Host->device transfers of managed memory   | `--capture-um` |
-| `umD2HMigrations`   | int64  | Device->host transfers of managed memory   | `--capture-um` |
-| `umMigrationTimeUs` | double | The transfers' durations, summed (us)      | `--capture-um` |
-| `umThrashing`       | bool   | CUPTI recorded thrashing in the window     | `--capture-um` |
-
-Under `--capture-um` each row carries CUPTI's unified-memory counters over its
-measurement's window, zeros when nothing migrated, on a GPU whose CUPTI records
-them. Where CUPTI cannot (the Jetson AGX Thor, an Nsight session,
-`VERNIER_DISABLE_CUPTI=1`), the cells stay empty and a run whose tests pass
-exits with status 4. See
-[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
+A GPU benchmark's file has 29 more columns: the device, the kernel and copy
+times, NVML's power and thermal readings, CUPTI's kernel metrics, the
+multi-GPU columns and the unified-memory counters. The API reference's
+[CSV Schema](API_REFERENCE.md#csv-schema) describes each, and when it is
+empty.
 
 ### GPU Profiler Integration
 
-GPU-specific profilers:
-
-| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                                    |
-| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute` or a selection), `kernel_replay.ncu-rep` (`--profile-args replay`) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                                           |
-| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                                           |
-
-"Under it" means the process must be started by the tool, as for the CPU
-tools in [Available Profilers](#available-profilers).
+The GPU profilers, `nsight`, `ncu`, `compute-sanitizer` and `rocprof`, are
+rows of [Available Profilers](#available-profilers), with what each needs,
+writes and costs.
 
 **Using Nsight:**
 
@@ -1187,7 +1098,8 @@ ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
    });
    ```
 
-2. **Use appropriate launch configuration** - Check occupancy
+2. **Declare the launch configuration** - compare launch shapes by their
+   times
 
    ```cpp
    auto result = perf.cudaKernel([&](cudaStream_t s) {
@@ -1196,8 +1108,11 @@ ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
      .withLaunchConfig(grid, block, sharedMemBytes)
      .measure();
 
-   EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
-     << "Low occupancy - increase threads or reduce resources";
+   // The occupancy figure is the launch shape's estimate, not how busy the
+   // GPU was, so it grades neither the kernel nor the GPU's use. A test
+   // tuned for this shape can require the estimate it gave, so that a
+   // changed shape shows
+   EXPECT_GE(result.stats.occupancy.achievedOccupancy, TUNED_SHAPE_ESTIMATE);
    ```
 
 3. **Profile with multiple block sizes** - Find optimal configuration
@@ -1215,25 +1130,26 @@ ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
    }
    ```
 
-4. **Measure transfer overhead separately** - Identify bottlenecks
+4. **Read the copies and the launch apart** - one measurement times both
 
    ```cpp
-   // Just transfers (no kernel)
-   auto transfer = perf.cudaKernel([&](cudaStream_t) {}, "transfer-only")
-     .withHostToDevice(h_in, d_in, SIZE)
-     .withDeviceToHost(d_out, h_out, SIZE)
-     .measure();
-
-   // Full pipeline
    auto full = perf.cudaKernel([&](cudaStream_t s) {
        myKernel<<<grid, block, 0, s>>>(d_in, d_out, N);
      }, "full")
      .withHostToDevice(h_in, d_in, SIZE)
      .withDeviceToHost(d_out, h_out, SIZE)
+     .withLaunchConfig(grid, block)
      .measure();
 
-   double kernelOnlyUs = full.kernelTimeUs - transfer.transferTimeUs;
+   // One launch, the two copy medians and one round trip: medians taken
+   // separately, so the first two need not add up to the third, and their
+   // ratio to it is not a share of one round trip
+   std::printf("launch %.1f us, copies %.1f us, round trip %.1f us\n",
+               full.kernelTimeUs, full.transferTimeUs, full.totalTimeUs);
    ```
+
+   An Nsight Systems timeline gives the copies' share of each round trip
+   (the GPU guide's [Transfer Overhead](GPU_GUIDE.md#transfer-overhead)).
 
 ---
 
@@ -1251,9 +1167,11 @@ ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
 ### GPU Benchmarking
 
 6. **Always warmup GPU kernels** - First launch includes JIT compilation
-7. **Check occupancy** - Target >50% for compute-bound kernels
+7. **Read occupancy as an estimate** - the launch shape's, not the GPU's use;
+   compare launch shapes by their times
 8. **Profile multiple block sizes** - Find optimal configuration
-9. **Measure transfers separately** - Identify bottlenecks
+9. **Read the copies and the launch apart** - an Nsight Systems timeline for
+   the copies' share of a round trip
 10. **Use appropriate memory strategy** - Test explicit vs unified vs pinned
 
 ### General

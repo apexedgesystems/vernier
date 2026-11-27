@@ -11,9 +11,11 @@
  *  - Memory leaks (definitely lost / indirectly lost / possibly lost)
  *  - Mismatched malloc/new and free/delete
  *
- * Not a perf profiler per se -- valgrind memcheck slows execution ~20x. The
- * value is running memcheck alongside benchmarks to catch correctness
- * regressions introduced by an optimization pass.
+ * Not a perf profiler: valgrind runs every instruction, and the slowdown
+ * depends on the code (the join example's faster version took about 110 times
+ * as long on a Raspberry Pi 4; walkthrough 15). The value is running memcheck
+ * alongside benchmarks to catch correctness regressions introduced by an
+ * optimization pass.
  *
  * Memcheck checks only when valgrind runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:

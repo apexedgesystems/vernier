@@ -3,9 +3,6 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-28 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`
 
 ## Overview
 
@@ -189,7 +186,7 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench compare run1.csv run2.csv
 ```
 
-Output, for the captured session's `run1.csv` and `run2.csv`:
+Captured output, for step 1's `run1.csv` and this step's `run2.csv`:
 
 ```
 Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -204,8 +201,8 @@ BasicWorkflow.JoinV1      20.00320      20.02720    +0.02400     +0.1%      0.1%
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-Nothing changed between those two runs: same binary, same input, a second
-apart. `bench compare` joins the two files on test name, subtracts the
+Nothing changed between those two runs: same binary, same input, run back
+to back. `bench compare` joins the two files on test name, subtracts the
 medians, and labels a row when its median moved by more than the threshold,
 as a percentage of the baseline's -- 5% by default, `--threshold` to change
 it. Here V0's median moved 3.2% and V1's 0.1%, both inside the threshold, so
@@ -214,8 +211,9 @@ a label on unchanged code, which the reference comparison below shows, means
 "the median moved by more than 5%", not "this code got slower or faster".
 
 The movement is real and it is not this demo's doing: a fresh process
-measures a little differently. Across thirteen runs of this command in one
-session on this rig, V0's median ranged from 920.9 to 1033.5 us/call, a spread
+measures a little differently. Across thirteen runs of this command on this
+rig, the reference and this page's two runs among them, V0's median ranged
+from 920.9 to 1033.5 us/call, a spread
 of 12.2%, while the CV inside each of those runs stayed between 0.0% and 0.3%:
 the gap between runs is about forty times the largest jitter within one. V1's
 median ranged from 19.7 to 21.2 us/call, a spread of 7.5%, against within-run
@@ -256,7 +254,8 @@ The demo is the pattern to copy:
    `bench compare before.csv after.csv`. Read the medians and the CVs as step
    3 does.
 4. Judge a change by more than one run of each side: with nothing changed,
-   V0's median on this page moved 12% across one session's runs.
+   V0's median on this page moved 12% across thirteen runs of step 1's
+   command.
 
 ## What Should Reproduce
 
@@ -268,8 +267,8 @@ The demo is the pattern to copy:
 | CV within one run      | 0.1% (V0) and 0.1% (V1); 0.0-0.3% and 0.1-2.8% over thirteen runs | depends on how still the machine is                                   |
 | the ratio without `-O` | 6.6x to 6.7x over three runs                                      | 7.5x to 7.6x on an x86 laptop                                         |
 
-The thirteen runs are step 1's command run ten times, then the reference
-capture, then the page's two runs, in one session on this rig. Those ranges
+The thirteen runs are runs of step 1's command on this rig, the reference and
+this page's two runs among them. Those ranges
 describe those runs; they are not a bound a run has to meet, and another run
 of unchanged code can land outside them. The ratio is the reading to carry
 elsewhere. Measured on an x86 laptop (Release, one pinned core, with other
@@ -295,14 +294,14 @@ magnitude do not.
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo, so you can compare a run
-of your own against it:
+A reference CSV from this rig ships with the demo, so you can compare a run of
+your own against it:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/01_basic_workflow.csv run1.csv
 ```
 
-Output, for the captured session's `run1.csv`:
+Captured output, for step 1's `run1.csv`:
 
 ```
 Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -317,19 +316,19 @@ BasicWorkflow.JoinV1      21.06390      20.00320    -1.06070     -5.0%      0.5%
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by this same binary on this same board seconds
-before the run above, and nothing changed between them, yet both rows carry a
+The reference is a run of step 1's command by this same binary on this same
+board, and nothing changed between it and the run above, yet both rows carry a
 label: V0's median moved 6.7% in the slower direction and V1's 5.0% in the
 faster one. That is the run-to-run spread from step 3 crossing the 5%
 threshold, and nothing else; the ratio between the two rows moved from 44.5x
-to 50.0x. Measured against the reference, the session's twelve other runs put
+to 50.0x. Measured against the reference, the other twelve of the thirteen
+runs put
 V0 between 1.8% below and 10.3% above it and V1 between 6.3% below and 0.8%
 above it, and three of the twelve would have drawn a label on each row. Expect
 labels here, and read the medians yourself. The CSVs' `hostname` column
-records the name visible to the process that captured each: this reference was
-captured in a UTS namespace named `pi4` on the same rig, so it records `pi4`,
-while the rig's ordinary captures, step 1's `run1.csv` among them, record
-`raspberrypi`.
+records the host name the writing process saw: the reference ran in a UTS
+namespace named `pi4` on this rig and records `pi4`, and step 1's `run1.csv`
+ran with the board's host name and records `raspberrypi`.
 
 On any other machine the absolute numbers will differ and the labels say
 nothing at all. What should survive is that V0's row is tens of times larger
@@ -347,8 +346,8 @@ Two things run against this example, and both fail loudly:
   [`JoinSpeedup_pTest.cpp`](../examples/join/ptst/JoinSpeedup_pTest.cpp),
   built as `JoinSpeedup`: comparing the two versions needs both timings in one
   test, which the demo's one row per test does not give. A timing belongs to
-  the machine that takes it, so it is not registered with `ctest`; it is run
-  on the rig by hand before a release:
+  the machine that takes it, so it is not registered with `ctest`; run it
+  on the rig:
 
   ```bash
   taskset -c 3 ./build/bin/ptests/JoinSpeedup
@@ -370,8 +369,8 @@ Two things run against this example, and both fail loudly:
   [  PASSED  ] 1 test.
   ```
 
-  Over ten runs in this session it read 45.3x to 48.2x. With `joinV0` given
-  `joinV1`'s body it read 1.0x and failed: "the demo has stopped
+  Over ten runs on this rig it read 45.3x to 48.2x. With `joinV0` given
+  `joinV1`'s body it reads 1.0x and fails: "the demo has stopped
   demonstrating".
 
 - The example's unit tests hold every version to the same answers and are
@@ -382,10 +381,8 @@ Two things run against this example, and both fail loudly:
   ctest --test-dir build -L demo
   ```
 
-This repository has no continuous-integration lane on the reference board, so
-nothing runs the demo or its timing check automatically. Before a release they
-are run on the rig by hand, with the commands above, and the reference CSV is
-re-captured when the numbers move.
+Nothing runs the demo or its timing check automatically: run them on the rig
+with the commands above.
 
 ## See Also
 

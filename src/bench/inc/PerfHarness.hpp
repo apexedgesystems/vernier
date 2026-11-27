@@ -610,7 +610,7 @@ inline std::string captureTimestamp() {
 inline constexpr int GIT_DESCRIBE_TIMEOUT_MS = 10000;
 
 /**
- * @brief Capture git commit hash (short form).
+ * @brief Name the working directory's commit the way `git describe` does.
  *
  * Runs `git describe --always --dirty --tags` in the working directory as a
  * bounded child without a shell (runBoundedProbe()), in the probe environment
@@ -690,10 +690,10 @@ captureMetadata(bool cacheMetadata = true) {
   }
   // Magic-static initialization IS the synchronization: the first caller
   // captures under the compiler's init guard, everyone else waits, and
-  // afterwards the tuple is immutable. The previous shape assigned bare
-  // statics behind an unguarded flag, racing whichever worker thread the
-  // GPU harness publishes from against the main thread -- and
-  // captureGitHash() runs a subprocess, so that window was wide.
+  // afterwards the tuple is immutable. The GPU harness publishes from worker
+  // threads as well as from the test's thread, and captureGitHash() runs a
+  // subprocess, so a first capture lasts long enough for a second caller to
+  // arrive during it.
   static const std::tuple<std::string, std::string, std::string> CACHED =
       std::make_tuple(captureGitHash(), captureHostname(), capturePlatform());
   return std::make_tuple(captureTimestamp(), std::get<0>(CACHED), std::get<1>(CACHED),
@@ -1105,8 +1105,9 @@ public:
   }
 
   /**
-   * @brief Contention run: start `threads()` workers simultaneously, each doing `cycles()` ops.
-   * The `worker` lambda is invoked in each thread. Caller is free to compute extras (e.g., drop%).
+   * @brief Contention run: start `threads()` threads together; each calls `worker` `cycles()`
+   * times per repeat, so `worker` is one operation, not a loop. The threads call it at the same
+   * time, so it keeps its own shared state safe. Caller is free to compute extras (e.g., drop%).
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
    * Publishes its own row, which records the workers it started, named as measured() names its
    * rows.

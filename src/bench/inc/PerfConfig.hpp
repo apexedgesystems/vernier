@@ -39,8 +39,8 @@ struct PerfConfig {
   std::optional<std::string> csv{}; ///< Optional CSV output path
 
   // ---- Profiling / artifact knobs (default off) ----
-  std::string profileTool;             ///< "", "perf", "gperf", "bpftrace", "rapl", "callgrind"
-  std::string profileArgs;             ///< Verbatim pass-through to the tool
+  std::string profileTool;             ///< "" or a registered backend (bench doctor lists the 15)
+  std::string profileArgs;             ///< The backend's arguments; each backend reads its own
   std::vector<std::string> bpfScripts; ///< bpftrace scripts (--bpf): names or paths
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
   int profileFrequency = 0;            ///< gperf CPU sampling rate asked for, Hz; 0: none asked

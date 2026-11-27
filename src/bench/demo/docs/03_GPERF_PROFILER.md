@@ -3,15 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-29 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`. The doctor's `gperf` row in Needs comes from this rig on
-2026-10-03 (UTC), a later tree at the same version; the skip and the row
-quoted under If It Does Not Match, from a Debug build of that tree without
-gperftools on an x86-64 laptop. The sampling-rate flag example under If It
-Does Not Match was recaptured on this rig on 2026-10-17 (UTC); the
-inherited-variable result beside it retains this rig's earlier capture, of
-2026-09-24 (UTC).
+**Tools:** gperftools 2.16 (its CPU profiler and `google-pprof`)
 
 ## Overview
 
@@ -30,7 +22,7 @@ records where the program was: the instruction it was running and the chain of
 calls that led there. Afterwards `google-pprof` counts the samples per
 function. A function that holds 60% of the samples was running about 60% of the
 time, give or take: with about two hundred samples a share is not exact, and
-ten profiles of V1 taken in this session put `joinV1`'s own share anywhere from
+ten profiles of V1 on this rig put `joinV1`'s own share anywhere from
 55.5% to 64.0%.
 
 At that rate the profiler costs little. Over five alternating runs of each
@@ -407,12 +399,12 @@ in `memcpy` (64.8%), V1 about 7.1 us of its 21.3 us (33.3%).
 
 "Own" is the function's machine code, its row and the `(inline)` rows inside
 it, counted from the stacks as step 4 does. The twelve runs are step 1's
-command run in one session on this rig, the reference capture and the page's
-run among them; the check's ten runs are `GperfProfiler.ProfileAttribution`
-run ten times in the same session. Those ranges describe those runs; they are
+command run twelve times on this rig, the reference and the page's run among
+them; the check's ten runs are `GperfProfiler.ProfileAttribution` run ten
+times on this rig. Those ranges describe those runs; they are
 not a bound a run has to meet, and another run can land outside them. The x86
 figures come from an x86 laptop with performance and efficiency cores (clang 21,
-gperftools 2.15, Release) that was busy with other work: the ratio from five
+gperftools 2.15, Release), with other work running on it: the ratio from five
 runs of step 1's command on a performance core, the profile shares from ten
 runs of the check on each kind of core.
 
@@ -435,7 +427,7 @@ runs of the check on each kind of core.
   `(inline)` rows.
 - **`GperfProfiler.ProfileAttribution` is skipped.**
   `gperf backend unavailable: missing: gperftools headers were not present when libbench was built`,
-  as a build without gperftools printed it on an x86-64 laptop, means Vernier
+  as a Debug build without gperftools printed it on an x86-64 laptop, means Vernier
   was built without gperftools; that build's doctor row reads
   `[FAIL] gperf      missing: gperftools headers were not present when libbench was built`.
   Install its development package, reconfigure and rebuild, and
@@ -461,15 +453,14 @@ runs of the check on each kind of core.
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo, so you can compare a run of
+A reference CSV from this rig ships with the demo, so you can compare a run of
 your own against it:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/03_gperf_profiler.csv run1.csv
 ```
 
-Output for step 1's `run1.csv`, printed by the `bench` CLI built from the tree
-this page ships in (`bench 1.0.3`):
+Output for step 1's `run1.csv`:
 
 ```
 Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
@@ -484,18 +475,19 @@ GperfProfiler.JoinV1      19.77560      19.65380    -0.12180     -0.6%      0.3%
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by the same binary seconds before step 1, and
-nothing changed between the two runs, yet V0's row is labelled `REGRESSION`:
+The reference is a run of step 1's command by the same binary on this rig,
+and nothing changed between the two runs, yet V0's row is labelled
+`REGRESSION`:
 its median came out 6.6% above the reference's, past the 5% threshold the
 labels are drawn at, while V1's moved 0.6% and is `neutral`. `Base CV` and
 `Cand CV` are each run's spread across its own repeats. Over the twelve runs of
-step 1's command in this session, V0's median ranged from 932.9 to 1032.0
+step 1's command, V0's median ranged from 932.9 to 1032.0
 us/call, 10.6%, and V1's from 19.7 to 21.3 us/call, 8.6%, with nothing
 changed, which is more than either run's CV says; V0's median is the noisiest
-reading on this page. The CSVs' `hostname` column records the name visible to
-the process that captured each: this reference was captured in a UTS
-namespace named `pi4` on the same rig, so it records `pi4`, while the rig's
-ordinary captures, step 1's `run1.csv` among them, record `raspberrypi`. What
+reading on this page. The CSVs' `hostname` column records the host name
+the writing process saw: the reference ran in a UTS namespace named `pi4` on
+this rig and records `pi4`, and step 1's `run1.csv` ran with the board's host
+name and records `raspberrypi`. What
 should hold is the ratio between the two rows, and the profile of each
 version.
 
@@ -515,7 +507,7 @@ Two things run against this example, and both fail loudly:
   example,
   [`JoinProfileAttribution_pTest.cpp`](../examples/join/ptst/JoinProfileAttribution_pTest.cpp),
   built as `JoinProfileAttribution`; a profile's shares are samples, so it is
-  not registered with `ctest`, and it is run on the rig by hand:
+  not registered with `ctest`; run it on the rig:
 
   ```bash
   taskset -c 3 ./build/bin/ptests/JoinProfileAttribution
@@ -540,18 +532,18 @@ Two things run against this example, and both fail loudly:
   [  PASSED  ] 1 test.
   ```
 
-  In ten runs in this session it passed every time, with the shares in the
+  In ten runs on this rig it passed every time, with the shares in the
   table above. It fails when `joinV0` is made to reserve like `joinV1` (its
   own code then holds 55.0% of V0's samples), when `joinV1` copies like
   `joinV0` (4.5% of V1's), and when both versions are forced inline (neither
   name appears). It reads the stacks because the flat column moves with the
   line tables: profiled the same way and read from `google-pprof --text`'s
-  flat column, `joinV1`'s share was 5.0% to 11.0% in ten runs in this session,
+  flat column, `joinV1`'s share was 5.0% to 11.0% in ten runs,
   the rest sitting in the `(inline)` rows of step 3.
 
 - The example's unit tests hold both versions to the same answers and are
   registered with `ctest` under the `demo` label, beside the other shared
-  examples' tests, so ordinary CI runs them:
+  examples' tests, so an ordinary test run includes them:
 
   ```bash
   ctest --test-dir build -L demo
@@ -562,10 +554,8 @@ Two things run against this example, and both fail loudly:
   `*/JoinSizesTest.VersionsAgree/*`, one CTest entry that runs the comparison at
   every input size the example's tests use.
 
-This repository has no continuous-integration lane on the reference board, so
-nothing runs the demo or its check automatically. Before a release they are
-run on the rig by hand, with the commands above, and the reference CSV is
-re-captured when the numbers move.
+Nothing runs the demo or its check automatically: run them on the rig with the
+commands above.
 
 ## See Also
 

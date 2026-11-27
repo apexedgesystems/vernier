@@ -3,11 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
-**Captured:** 2026-09-28 (UTC); written for the Vernier 1.0.4 release;
-captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`; valgrind 3.24.0. The doctor's row and the
-`--profile-args drd` run come from 2026-10-03 (UTC), a later tree at the same
-version.
+**Tools:** valgrind 3.24.0
 
 ## Overview
 
@@ -165,8 +161,8 @@ valgrind, `Helgrind.RacyTotal` skips itself and says how to run it; it asks
 `isRunningUnderValgrind()`, from [`ProfilerEnv.hpp`](../../inc/ProfilerEnv.hpp),
 whether valgrind is running it. It measures nothing: under valgrind a time
 means nothing, and a fixed number of additions is what its total is checked
-against. That check passed in all eight runs of the case under helgrind for
-this page, and the check program below requires it. Valgrind runs one thread
+against. That check passed in all eight runs of the case under helgrind, and
+the check program below requires it. Valgrind runs one thread
 at a time, and in these runs no addition was lost: the total came out right,
 the race was there all the same, and that is why a test of the answer cannot
 be relied on to find it.
@@ -258,7 +254,7 @@ to see what that wins, and helgrind is how to see that it is still right.
 not under valgrind, and it is not timed anywhere: under valgrind a time says
 nothing about the code. The CSV holds the one timing row.
 
-Over the session's twelve runs of step 1's command on this rig, the median
+Over twelve runs of step 1's command on this rig, the median
 ranged from 21.7 to 22.5 us, and over six runs of the one-thread command from
 18.9 to 19.2 us: every four-thread run was slower than every one-thread run.
 Those ranges describe those runs; they are not a bound a run has to meet, and
@@ -419,20 +415,22 @@ accesses in every thread, which is what `Helgrind.LockedTotal` does. Run with
 `-s` (`--show-error-list=yes`), as the log's last lines suggest, and valgrind
 lists each place with its count, `3 errors in context 1 of 2` and
 `3 errors in context 2 of 2`, and names the suppressions it used: in every run
-for this page that printed the list, of either case, one of valgrind's own
+with `-s` on this rig, of either case, one of valgrind's own
 suppressions for the C library, `helgrind-glibc2X-005`, and no other.
 
 What not to conclude:
 
-- **That the total came out wrong.** It came out right in every run for this
-  page: under valgrind one thread runs at a time, and no addition was lost.
+- **That the total came out wrong.** It came out right in all eight runs of
+  the case under helgrind: under valgrind one thread runs at a time, and no
+  addition was lost.
   Helgrind reports accesses that nothing orders, whether or not a run lost an
   addition to them.
 - **That the addresses mean anything.** `0x120B68`, `0x1FFF000208` and the
   rest belong to this build and this run: runs of the same binary with other
   arguments put the total at `0x1FFF0002F8`.
-- **That the line numbers travel.** They are this revision's
-  `14_HelgrindProfiler_Racy.cpp`; a build of an edited file names other lines.
+- **That the line numbers travel.** They are the lines of
+  `14_HelgrindProfiler_Racy.cpp` as it ships; a build of an edited file names
+  other lines.
   The names travel: `addJoinedLength`, `Locks held: none`, `read of size 8`,
   `write of size 8`.
 - **That `???` means something is broken.** In `(???:)` after `TestBody()`,
@@ -495,8 +493,8 @@ atomic flags, which helgrind cannot see as synchronisation, so while it exists
 it asks Vernier's library to have helgrind leave those two flags unchecked.
 The library carries valgrind's `helgrind.h` and makes the request in every
 build, whatever the build machine has installed and whatever the benchmark's
-own build has. The rest of the program is checked as before: a race between
-the workers of a contention test is still reported
+own build has. The marking covers only those two flags: a race between the
+workers of a contention test is reported
 ([What Keeps This Page True](#what-keeps-this-page-true)). A library built
 with `NVALGRIND` makes no request, and the same run reports five races in
 `contentionRun` ([If It Does Not Match](#if-it-does-not-match)).
@@ -566,13 +564,13 @@ which is 0 in both cases here.
 | suppressed reports                | 6 from 2, valgrind's `helgrind-glibc2X-005`                                                                                                                      | depend on valgrind and the C library: 0 from 0 on the laptop                                                                                                                                                         |
 | the racy case's answer            | right in all eight runs                                                                                                                                          | right on the laptop and in the container too; the case never runs without valgrind                                                                                                                                   |
 | the locked version under helgrind | 0 errors from 0 contexts, in all eight runs of it                                                                                                                | 0 errors on the laptop and in the container too; five races in `contentionRun` where the start gate is not marked                                                                                                    |
-| four threads against one (step 1) | four threads slower per call, 22.1 against 18.9 us, in step 1 and in every run of the session                                                                    | no faster than one thread wherever the lock covers the whole call, since only one call runs at a time; by how much depends on the machine                                                                            |
+| four threads against one (step 1) | four threads slower per call, 22.1 against 18.9 us, in step 1 and in every run of step 1's command                                                               | no faster than one thread wherever the lock covers the whole call, since only one call runs at a time; by how much depends on the machine                                                                            |
 | helgrind's cost                   | the locked version 13.7 to 14.6 ms per call over eight runs, against 22.1 us                                                                                     | depends on the machine, and changes from run to run                                                                                                                                                                  |
 | absolute times                    | 22.1 and 18.9 us per call in step 1; 21.7 to 22.5 over twelve runs and 18.9 to 19.2 over six                                                                     | will differ                                                                                                                                                                                                          |
 
-The twelve runs are step 1's command run twelve times in one session on this
-rig, the reference capture and this page's run among them; the six are the
-one-thread command in the same session, this page's run among them. Those
+The twelve runs are step 1's command run twelve times on this rig, the
+reference's run and this page's among them; the six are the one-thread
+command, this page's run among them. Those
 ranges describe those runs; they are not a bound a run has to meet, and
 another run of the same command can land outside them. The helgrind readings
 are the ones to carry elsewhere. The laptop's come from a GCC 11.4 Release
@@ -663,14 +661,13 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo:
+A reference CSV from this rig ships with the demo:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/20_helgrind_profiler.csv run.csv
 ```
 
-Output for step 1's `run.csv`, printed by the `bench` CLI built from the tree
-this page ships in (`bench 1.0.3`):
+Output for step 1's `run.csv`:
 
 ```
 
@@ -685,24 +682,23 @@ Helgrind.LockedTotal      22.09600      22.11040    +0.01440     +0.1%      2.8%
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by the same binary on this board immediately
-before step 1's run (the two CSVs' timestamps are three seconds apart), and
-nothing changed between them: the median came out +0.1% against it, inside
-the 5% threshold the labels are drawn at, so the row says `neutral`. That is
-this pair of runs, not a property of the code. The CSVs' `hostname` column
-records the name visible to the process that captured each: this reference was
-captured in a UTS namespace named `pi4` on the same rig, so it records `pi4`,
-while the rig's ordinary captures, step 1's `run.csv` among them, record
-`raspberrypi`. As the note under the table says, a label compares two runs'
-medians; it is not a significance test, and `Base CV` and `Cand CV` are each
-run's own spread, which says nothing about the spread between runs: 2.8% and
-1.4% here. Over the session's twelve runs of step 1, the median ranged from
-21.7 to 22.5 us, 3.9%, with nothing changed: inside the threshold, but that
-range describes those runs, and another run can land outside it. The
-four-thread median is the noisiest measurement on this page, against 1.5% for
-the one-thread median over its six runs. Read the median and the CV, and compare the four-thread time with one
-thread's. The CSV holds times only; what helgrind found is checked by
-`Helgrind.FindsTheRace`, below.
+The reference is a run of step 1's command by the same binary on this board, and
+nothing changed between it and step 1's run: the median came out +0.1% against
+it, inside the 5% threshold the labels are drawn at, so the row says `neutral`.
+That is this pair of runs, not a property of the code. The CSVs' `hostname`
+column records the host name the writing process saw: the reference ran in a UTS
+namespace named `pi4` on this rig and records `pi4`, and step 1's `run.csv` ran
+with the board's host name and records `raspberrypi`. As the note under the
+table says, a label compares two runs' medians; it is not a significance test,
+and `Base CV` and `Cand CV` are each run's own spread, which says nothing about
+the spread between runs: 2.8% and 1.4% here. Over twelve runs of step 1's
+command, with the same build and settings, the median ranged from 21.7 to 22.5
+us, 3.9%: inside the threshold, but that range describes those runs, and another
+run can land outside it. The four-thread median is the noisiest measurement on
+this page, against 1.5% for the one-thread median over its six runs. Read the
+median and the CV, and compare the four-thread time with one thread's. The CSV
+holds times only; what helgrind found is checked by `Helgrind.FindsTheRace`,
+below.
 
 ## What Keeps This Page True
 
@@ -775,11 +771,9 @@ ctest --test-dir build -L demo
 Every test they select should pass. The racy probe of the harness's test,
 `StartGateProbe.RacyWorkers`, is not among them: it is compiled into that
 test's program, which runs it under helgrind, and is not registered, since
-outside valgrind it only skips. The demo's timing test is not registered: what it
-measures belongs to the machine it runs on. This repository has no
-continuous-integration lane on the reference board, so before a release the
-page's commands are run on the rig by hand, and the page and its reference CSV
-are re-captured when what they show changes.
+outside valgrind it only skips. The demo's timing test is not registered:
+what it measures belongs to the machine it runs on; run it on the rig with the
+page's commands.
 
 ## See Also
 

@@ -198,8 +198,17 @@ bench compare before.csv after.csv
 **5. Check warmup is sufficient**:
 
 ```bash
-# Look at warmup column in CSV
-grep "warmup" results.csv
+# Each row's warmup column, by name (the CSV schema says what it counts)
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout)
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test warmup
 ```
 
 ---
@@ -696,35 +705,45 @@ const int N = 64;
 const int N = 1024 * 1024;
 ```
 
-**2. Transfer overhead dominates**:
+**2. The copies take most of each round trip**:
 
 ```bash
-# Check CSV: compare transferTimeUs against kernelTimeUs
-bench summary results.csv --json | grep -E "transferTimeUs|kernelTimeUs"
-# If transfer time rivals kernel time, transfers dominate
-
-# Keep data on GPU longer or use Unified Memory
+# One launch, the two copy medians and the round trip, by column name. A CSV
+# reader keeps a quoted test name (a measurement's label may hold a comma)
+# in one column, where splitting lines at commas would shift the columns
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout)
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test kernelTimeUs transferTimeUs wallMedian
 ```
 
-**3. Poor occupancy**:
+`kernelTimeUs` is one launch, `transferTimeUs` the two copy medians and
+`wallMedian` the round trip, each a median of its own, so the first two need
+not add up to the third and their ratio is not a share of one round trip. An
+Nsight Systems timeline shows which takes most of each round trip (the GPU
+guide's [Transfer Overhead](GPU_GUIDE.md#transfer-overhead)). If it is the
+copies, keep the data on the GPU longer or use Unified Memory.
 
-```bash
-grep "occupancy" results.csv
-# If <0.5, GPU underutilized
+**3. The launch shape**:
 
-# Try different block sizes
-./test --csv results_128.csv  # Try 128 threads/block
-./test --csv results_256.csv  # Try 256 threads/block
-```
+The `occupancy` column is the launch shape's estimate, not how busy the GPU
+was ([Occupancy](GPU_GUIDE.md#occupancy)). Compare block sizes by their times
+in one test (the GPU guide's [Block Size Sweep](GPU_GUIDE.md#block-size-sweep)),
+and measure the occupancy a kernel achieves with Nsight Compute.
 
-**4. Thermal throttling**:
+**4. The SM clock fell**:
 
-```bash
-# Monitor during test
-watch -n 1 nvidia-smi
-
-# Look for GPU clocks dropping
-```
+A row's `throttling` cell is 1 when NVML's SM clock fell more than 10% from
+the measured window's start to its end, and empty unless NVML reported both
+and the maximum SM clock. It says the clock changed, not why: the GPU guide's
+[High CV%](GPU_GUIDE.md#high-cv-unstable-results) item 2 shows how to find
+out.
 
 **Debug steps:**
 
@@ -732,25 +751,44 @@ watch -n 1 nvidia-smi
 # Profile to identify bottleneck (bench run starts it under nsys)
 bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*CpuVsGpu*"
 
-# Check all GPU metrics in CSV
-cat results.csv | grep -E "(transfer|occupancy|speedup)"
+# The GPU columns this section reads, by name (the reader of item 2)
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout)
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test transferTimeUs occupancy speedupVsCpu
 ```
 
 ---
 
 ### NVML Warnings
 
-**Symptoms:**
+**Symptoms:** a `[gpu]` line naming the NVML cells that stay empty, once per
+run, for example
 
 ```
-Warning: NVML initialization failed
+[gpu] NVML did not initialize (<NVML's reason>): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[gpu] NVML reported no power limit (Not Supported): powerLimitW stays empty.
 ```
+
+A line saying that Vernier publishes NVML's endpoint power reading only for a
+measured window of 1.5 s or more is not one of these: NVML reported the
+reading, the window was shorter, and `powerDrawW` stays empty by Vernier's
+own rule ([Power and Thermal Columns](API_REFERENCE.md#power-and-thermal-columns));
+a window of 1.5 s or more fills it.
 
 **Impact:**
 
 - Non-fatal - tests still run
-- GPU clock monitoring disabled
-- No throttling detection
+- The cells the line names stay empty; in `result.stats.clocks` and
+  `powerThermal` those readings are 0, so read `isThrottling()` only when its
+  three clocks are above 0 (the GPU guide's
+  [High CV%](GPU_GUIDE.md#high-cv-unstable-results) item 2)
 
 **Solutions:**
 
@@ -855,10 +893,10 @@ runs under another tool than the requested one fails the same way, naming
 both (`--profile ncu needs ncu, and this process runs under nsys`).
 
 **Fix:** run it as the line says: `bench run <binary> --profile <name>`
-starts the binary under the tool (every name above but `rocprof`, and every
-mode but an Nsight kernel replay), or start it yourself with the printed
-command. Under the tool, the valgrind tools and heaptrack are confirmed from
-the process's own memory map. nsys, ncu, compute-sanitizer and rocprof cannot
+starts the binary under the tool (every name above but `rocprof`, a kernel
+replay included), or start it yourself with the printed command. Under the
+tool, the valgrind tools and heaptrack are confirmed from the process's own
+memory map. nsys, ncu, compute-sanitizer and rocprof cannot
 be confirmed from inside the process: the run proceeds with a `[WARN] ...
 unverified:` line that says so, and the tool's report is the evidence.
 
@@ -1045,10 +1083,13 @@ sudo env PATH="$PATH" bench run ./test --profile ncu --cycles 3 --repeats 1 -- \
 sudo chown -R "$(id -u):$(id -g)" bench-out
 ```
 
-If you only need per-kernel metrics, the in-process CUPTI columns (kernel time,
-registers, shared memory, launch count) populate automatically with no nsys
-required; for occupancy / warp stalls / cache / roofline, use `ncu` (see
-`GPU_GUIDE.md`).
+If you need only a kernel's registers, shared memory and launch count, the
+in-process CUPTI columns hold them without nsys or ncu, where CUPTI is
+available
+([CUPTI In-Process Kernel Metrics](API_REFERENCE.md#cupti-in-process-kernel-metrics));
+the kernel's time is the harness's `kernelTimeUs`, from CUDA events. For
+occupancy, warp stalls, cache and roofline, use `ncu`
+([Using Nsight Compute](GPU_GUIDE.md#using-nsight-compute)).
 
 ---
 
@@ -1540,8 +1581,10 @@ Include:
 
 **GPU not faster?**
 
-- [ ] Check transfer overhead %
-- [ ] Verify occupancy > 50%
+- [ ] Compare `kernelTimeUs` with `transferTimeUs`, then take an Nsight
+      Systems timeline for the copies' share
+- [ ] Compare block sizes by their times (the occupancy column is an
+      estimate)
 - [ ] Ensure workload is large enough
 
 **CSV not generated?**

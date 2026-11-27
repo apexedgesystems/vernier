@@ -3,14 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** the [`join`](../examples/join/inc/Join.hpp) example's words (see [Shared Workloads](../README.md#5-shared-workloads)), written out as lines and joined by threads, in a workload private to the demo
-**Captured:** 2026-10-03 (UTC); the doctor's rows for a probe the kernel lacks
-and for a script that ends itself, and step 6's script with its opening
-comment as it now reads, 2026-10-04 (UTC); the three runs in
-[If It Does Not Match](#if-it-does-not-match) without the opt-in, with a script
-that ends itself and in a PID namespace of its own, 2026-10-12 (UTC), from a
-later development tree at the same version; written for the Vernier 1.0.4
-release; captured from the development tree at project version 1.0.3, whose
-CLI reported `bench 1.0.3`; bpftrace 0.23.2 on Linux 6.18
+**Tools:** bpftrace 0.23.2
 
 ## Overview
 
@@ -223,7 +216,7 @@ copying. `--target-time 50ms` sized the repeats from a calibration, as the
 `[target-time]` lines show: 88 calls per repeat of the per-line version and
 88,048 of the batched one, with CVs of 0.2%.
 
-Over the session's twelve runs of this command, the per-line median ranged
+Over twelve runs of this command, the per-line median ranged
 from 531.9 to 567.0 us, the batched one from 0.528 to 0.569 us, and their ratio
 from 991 to 1,009. This run was the slowest of the twelve in both tests, by
 about the same 6.5%, so the ratio held. Those ranges describe those runs; they
@@ -270,10 +263,10 @@ BpftraceProfiler.NoSharing          7.180    2.3%      139.3K  OK
 ```
 
 On three threads, the version with the lock took 20.7 us per call and the one
-that shares nothing 7.2 us: 2.9 times as long, and 2.80 to 3.07 times over the
-session's twelve runs. Walkthrough 06 reads these numbers. Here they are what
-step 5 traces: under the lock the threads take turns, and a thread that finds
-the lock held sleeps until the holder wakes it.
+that shares nothing 7.2 us: 2.9 times as long, and 2.80 to 3.07 times over
+twelve runs of this command. Walkthrough 06 reads these numbers. Here they are
+what step 5 traces: under the lock the threads take turns, and a thread that
+finds the lock held sleeps until the holder wakes it.
 
 ## Step 2: Trace the Writes
 
@@ -733,9 +726,9 @@ to a benchmark that is already running.
 | write sizes                                 | per line 19,680 of 4 to 7 bytes and 20,320 of 8 to 15; batched 40 of 4K to 8K | should match: they are the example's                                                                                                 |
 | absolute times                              | 567.0 and 0.569 us per call; 20.7 and 7.2 us on three threads                 | will differ                                                                                                                          |
 
-The twelve runs are step 1's commands run twelve times each in one session on
-this rig, with the governor pinned, the reference capture first and this
-page's runs last. The ranges describe those runs; they are not a bound a run
+The twelve runs are step 1's commands run twelve times each on this rig, with
+the governor pinned, the reference's run and this page's among them. The
+ranges describe those runs; they are not a bound a run
 has to meet, and another run can land outside them. The laptop's figures come
 from three runs on one of its cores, with other work running.
 
@@ -925,15 +918,14 @@ decision the run makes before its first test, and runs no test.
 
 ## Check Against the Reference
 
-A capture of step 1's write pair from this rig is committed with the demo:
+A reference CSV of step 1's write pair from this rig ships with the demo:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/09_bpftrace_profiler.csv writes.csv
 ```
 
-Output for step 1's `writes.csv`, printed by the `bench` CLI built from the
-tree this page ships in (`bench 1.0.3`); the CLI prints the header in bold and
-the labels in colour, which is not reproduced here:
+Output for step 1's `writes.csv`; the CLI prints the header in bold and the
+labels in colour, which is not reproduced here:
 
 ```
 
@@ -949,22 +941,20 @@ BpftraceProfiler.WritePerLine     532.28000     566.98900   +34.70900     +6.5% 
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference is step 1's command run first in the same session on this
-board, by the same binary: its rows' timestamps are eleven seconds before
-`writes.csv`'s. Nothing changed between the two runs, yet both of this page's
+The reference is one of the twelve runs of step 1's command on this board, with
+the same build and the same settings as this page's run, yet both of this page's
 medians came out 6.5% slower, past the 5% threshold, so both rows read
 `REGRESSION`. That is this pair of runs, not a property of the code: of the
-session's twelve runs, this page's was the slowest in both tests, while nine
-of the other eleven read within 0.5% of the reference's per-line median. As the note under the table says, a label compares two runs'
-medians; it is not a significance test, and `Base CV` and `Cand CV` are each
-run's own spread, which says nothing about the spread between runs. Over the
-twelve runs, the per-line median ranged from 531.9 to 567.0 us, 6.6%, with
-nothing changed. Read the ratio between the two tests, which held at 996x
-here and 991x to 1,009x over the twelve, not the label. The CSVs' `hostname`
-column records the name visible to the process that captured each: both were
-captured in the rig's ordinary session, not in a UTS namespace named `pi4`, so
-both record the board's host name, `raspberrypi`. The CSV holds times only;
-what bpftrace counted is checked by `Bpftrace.CountsEveryWrite`, below.
+twelve runs, this page's was the slowest in both tests, while nine of the other
+eleven read within 0.5% of the reference's per-line median. As the note under
+the table says, a label compares two runs' medians; it is not a significance
+test, and `Base CV` and `Cand CV` are each run's own spread, which says nothing
+about the spread between runs. Over the twelve runs, the per-line median ranged
+from 531.9 to 567.0 us, 6.6%, with the same build and settings. Read the ratio
+between the two tests, which held at 996x here and 991x to 1,009x over the
+twelve, not the label. Both CSVs' `hostname` column records the board's host
+name, `raspberrypi`. The CSV holds times only; what bpftrace counted is checked
+by `Bpftrace.CountsEveryWrite`, below.
 
 ## What Keeps This Page True
 
@@ -1008,13 +998,9 @@ ctest --test-dir build -L bpftrace
 ctest --test-dir build -L demo
 ```
 
-On this rig, at this page's revision, both commands passed every test they
-ran, and the traced test counted 40,000 of 40,000 writes. The demo's timing
-tests are not registered: what they measure
-belongs to the machine they run on. This repository has no
-continuous-integration lane on the reference board, so before a release the
-page's commands are run on the rig by hand, and the page and its reference CSV
-are re-captured when what they show changes.
+On this rig both commands passed every test they ran, and the traced test
+counted 40,000 of 40,000 writes. The demo's timing tests are not registered:
+what they measure belongs to the machine they run on.
 
 ## See Also
 

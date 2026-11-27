@@ -122,7 +122,9 @@ struct PerfRow {
   std::optional<std::uint32_t> cuptiDynamicSmemBytes;
 
   // Multi-GPU fields
-  std::optional<int> deviceId;              ///< Which GPU (0-N), -1 = single-GPU test
+  /// The device a single-device row's withDeviceId() named, empty when the
+  /// case's own device ran it; -1 in a multi-GPU row.
+  std::optional<int> deviceId;
   std::optional<int> deviceCount;           ///< Total GPUs used in this test
   std::optional<double> multiGpuEfficiency; ///< Not measured: always empty
   std::optional<double> p2pBandwidthGBs;    ///< Peer-to-peer bandwidth

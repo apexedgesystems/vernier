@@ -12,7 +12,7 @@
  *   #include "src/bench/inc/Perf.hpp"
  *
  *   PERF_TEST(MyLib, Throughput) {
- *     UB_PERF_GUARD(perf);
+ *     PERF_GUARD(perf);
  *     perf.warmup([&]{ ... });
  *     perf.throughputLoop([&]{ ... });
  *   }

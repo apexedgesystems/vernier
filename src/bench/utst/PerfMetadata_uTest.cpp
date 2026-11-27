@@ -6,11 +6,10 @@
  * The GPU harness publishes results from more than one thread (main plus
  * the worker CUPTI flushes ride on), and every publish captures metadata.
  * The cache must therefore initialize exactly once under contention and
- * hand out identical, immutable values afterwards. Found as a real
- * cycles-dependent segfault on aarch64: the old shape assigned bare
- * statics behind an unguarded flag while captureGitHash's subprocess
- * held the window open. Run under TSan (make tsan) this test convicts
- * that shape; on the magic-static shape it is silent.
+ * hand out identical, immutable values afterwards. Bare statics behind an
+ * unguarded flag race while captureGitHash's subprocess runs, which can
+ * crash on aarch64: run under TSan (make tsan), this test convicts such a
+ * shape, and on the magic-static shape it is silent.
  *
  * A benchmark started under a tool's wrap carries the variables that put
  * the tool into a process (bench run's jemalloc wrap sets LD_PRELOAD and

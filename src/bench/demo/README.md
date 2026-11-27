@@ -1,11 +1,15 @@
 # Benchmarking Demos
 
 **Location:** `src/bench/demo/`
-**Platform:** Linux x86_64 (CPU), CUDA (GPU)
+**Platform:** Linux on x86_64 and aarch64; the GPU demos need an NVIDIA GPU
+with CUDA, and the RAPL demo an Intel CPU. The reference rigs the walkthroughs
+are captured on, a Raspberry Pi 4 (CPU) and a Jetson AGX Thor (GPU), are both
+aarch64 ([section 7](#7-reference-rigs-and-the-demo-contract)).
 
 Self-contained demonstrations of the Vernier benchmarking framework. Each demo
-is a runnable executable paired with a step-by-step walkthrough. Start with Demo
-01 and progress in order -- each demo builds on concepts from the previous one.
+is a runnable executable paired with a step-by-step walkthrough. Start with
+walkthrough 01, then pick the walkthrough that answers your question; the
+[Learning Path](#6-learning-path) groups them.
 
 ---
 
@@ -38,9 +42,9 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench summary run1.csv
 ```
 
-Captured on the Raspberry Pi 4 rig, 2026-09-28 (UTC), Release build. The two
-result lines, without GoogleTest's framing, the harness's calibration lines
-and the end-of-run table:
+Captured on the [Raspberry Pi 4 rig](../docs/rigs/RIG_PI4.md), Release build.
+The two result lines, without GoogleTest's framing, the harness's calibration
+lines and the end-of-run table:
 
 ```
 [BasicWorkflow.JoinV0]  1000.531 us/call  CV=0.1%  ~999 calls/s  (p10=999.845 p90=1001.631 sd=0.879)
@@ -60,8 +64,8 @@ BasicWorkflow.JoinV1      20.00320  19.97520  20.02200      0.1%           49992
 
 Reserving the result once instead of copying it per part is 50 times faster
 in this capture. The framework measured both versions, wrote the CSV, and
-`bench summary` read it back. Every demo follows the same pattern: measure
-something slow, measure something fast, compare.
+`bench summary` read it back. Every demo follows the same pattern: measure two
+versions or cases of one thing, then compare them.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
 walkthrough: how to read those lines, what reproduces on another machine, how
@@ -71,7 +75,7 @@ to compare two runs, and how to measure your own code the same way.
 
 ## 2. CPU Demos
 
-| #   | Demo                | Concept                                        | Slow Path                                                   | Fast Path                                    | Walkthrough                                               |
+| #   | Demo                | Concept                                        | Measures                                                    | Against                                      | Walkthrough                                               |
 | --- | ------------------- | ---------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------- |
 | 01  | Basic Workflow      | Measure-export-analyze cycle                   | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)         |
 | 02  | perf Profiler       | Hardware counters: instructions, branch misses | join V0 (copy per part); filter with a branch, random input | join V1 (reserve, append); filter branchless | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)           |
@@ -87,8 +91,10 @@ to compare two runs, and how to measure your own code the same way.
 | 15  | Heaptrack Profiler  | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
 | 16  | jemalloc Profiler   | Which function the allocated bytes come from   | join V0 (copy per part)                                     | join V1 (one allocation per call)            | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
 
-The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
-filenames carry their own sequential number across CPU + GPU.
+The `#` column is the program's number (`BenchDemo_NN_*`). A walkthrough's
+number is its file name's, which runs across CPU and GPU, so the two differ for
+CPU demos 11 to 16 and for every GPU demo; the rest of this page numbers by
+walkthrough.
 
 ---
 
@@ -96,7 +102,7 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                                       | Slow Path                                            | Fast Path                                           | Walkthrough                                               |
+| #   | Demo               | Concept                                       | Measures                                             | Against                                             | Walkthrough                                               |
 | --- | ------------------ | --------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
 | 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                              | Same kernel, with and without its transfers         | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
 | 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block          | SAXPY G1: buffers once, 256 threads/block           | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
@@ -106,8 +112,9 @@ Requires NVIDIA GPU with CUDA support.
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demos 01, 02, 04 and 05 measure the shared SAXPY example (see
-[Shared Examples](#shared-examples)); demo 03 carries its own kernels.
+GPU demos 01, 02, 04 and 05 (walkthroughs 10, 11, 17 and 13) measure the
+shared SAXPY example (see [Shared Examples](#shared-examples)); GPU demo 03
+(walkthrough 12) carries its own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -120,28 +127,32 @@ Two GPU topics have a walkthrough but no dedicated demo binary:
 
 ## 4. Running Demos
 
-All demos are built as performance test executables (ptests):
+All demos are built as performance test executables (ptests). Run them from a
+Release build: the one in [Getting Started](#1-getting-started), or in the
+`dev` container, `docker compose run --rm -T dev make release`:
 
 ```bash
 # Run a demo
-docker compose run --rm -T dev bash -c '
-  ./build/native-linux-debug/bin/ptests/BenchDemo_01_BasicWorkflow --quick
-'
+docker compose run --rm -T dev \
+  ./build/native-linux-release/bin/ptests/BenchDemo_01_BasicWorkflow --quick
 
 # Export results to CSV and analyze
 docker compose run --rm -T dev bash -c '
-  cd build/native-linux-debug
+  cd build/native-linux-release
   ./bin/ptests/BenchDemo_01_BasicWorkflow --csv results.csv
   source .env
   bench summary results.csv
 '
 
 # Run a specific test within a demo
-docker compose run --rm -T dev bash -c '
-  ./build/native-linux-debug/bin/ptests/BenchDemo_02_PerfProfiler \
-    --gtest_filter="PerfProfiler.FilterBranchless"
-'
+docker compose run --rm -T dev \
+  ./build/native-linux-release/bin/ptests/BenchDemo_02_PerfProfiler \
+  --gtest_filter="PerfProfiler.FilterBranchless"
 ```
+
+The container's Debug build (`make debug`, where the tests run) puts the same
+programs under `build/native-linux-debug/bin/ptests/`; its timings are a Debug
+build's, not comparable with the walkthroughs'.
 
 ### CLI Flags
 
@@ -173,16 +184,16 @@ Code a walkthrough teaches from lives in its own directory, as
 `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its own: a small
 library the demo links, and unit tests that hold the example's versions to
 the same answers, registered under the `demo` label
-(`ctest --test-dir build -L demo`). An example's performance tests, run by
-hand on the rig and never registered, are in its `ptst` directory. The first
-is [examples/join](examples/join/inc/Join.hpp), and the table below names the
-demos that use each example.
+(`ctest --test-dir build -L demo`). An example's performance tests are in its
+`ptst` directory; CTest does not register them, so run them on the rig
+yourself. The first is [examples/join](examples/join/inc/Join.hpp), and the
+table below names the walkthroughs whose demos use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                                                  |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 08, 09, 14, 15, 16, 20, 21, 22 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                                  |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                                 |
+| Example                                  | Versions                                                                                                                                           | Used In (walkthroughs)                             |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | 01, 02, 03, 06, 07, 08, 09, 14, 15, 16, 20, 21, 22 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | 02                                                 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | 10, 11, 13, 17, 19                                 |
 
 The saxpy library and its device tests are built only where the GPU demos are;
 its host tests on a stand-in runtime are built everywhere.
@@ -237,8 +248,9 @@ Walkthroughs are numbered by their file name in `docs/`.
 
 A walkthrough names the machine its output was captured on, in a
 `Reference rig` line at its top, and links the rig document instead of
-repeating the setup. A walkthrough without that line has not been captured
-on a rig. See [docs/rigs/README.md](../docs/rigs/README.md).
+repeating the setup. A walkthrough whose `Reference rig` line names no rig
+names the machine its output comes from instead. See
+[docs/rigs/README.md](../docs/rigs/README.md).
 
 | Rig                                                    | Walkthroughs |
 | ------------------------------------------------------ | ------------ |
@@ -247,9 +259,9 @@ on a rig. See [docs/rigs/README.md](../docs/rigs/README.md).
 
 A walkthrough meets this contract:
 
-- **A named rig and a Release build.** Commands were run as written and
-  output blocks are pasted from that run, with the capture date and the
-  Vernier version.
+- **A named rig and a Release build.** Commands are run as written, and
+  output blocks are pasted from those runs; the header names the third-party
+  tools whose output the page reads, at their versions.
 - **A test that asserts its own effect.** A test fails if the slow and
   fast variants stop differing in what the walkthrough shows: the demo's
   own performance test, or the unit tests of the example it measures when
@@ -257,9 +269,8 @@ A walkthrough meets this contract:
   walkthrough names its test, and cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
-- **Something runs it.** A walkthrough is re-run on its rig before every
-  release, and on the rig's CI lane where one exists. A failing assertion
-  blocks the release. An assertion nothing runs protects nothing.
+- **Something runs it.** The walkthrough names its test and the command or
+  `ctest` label that runs it. An assertion nothing runs protects nothing.
 
 New walkthroughs start from [docs/TEMPLATE.md](docs/TEMPLATE.md).
 

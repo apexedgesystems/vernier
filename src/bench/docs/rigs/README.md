@@ -23,8 +23,8 @@ names its rig and links here instead of repeating the setup.
 
 A benchmark number means nothing without the machine, the build type and
 the conditions it came from. "About 5x faster" cannot be checked. "4.0x on
-a Raspberry Pi 4, Release build, governor pinned, one pinned core, captured
-with Vernier 1.0.4" can.
+a Raspberry Pi 4, Release build, governor pinned, one pinned core, over ten
+runs" can.
 
 Each rig document states the hardware, the operating system and tool
 versions, the one-time setup, the build command, and the conditions a
@@ -34,10 +34,10 @@ output.
 
 ## 2. The Rigs
 
-| Rig                                  | Document                           | Used by                                                         |
-| ------------------------------------ | ---------------------------------- | --------------------------------------------------------------- |
-| Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs                                                |
-| NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs, and CPU walkthroughs that need a GPU timeline |
+| Rig                                  | Document                           | Used by          |
+| ------------------------------------ | ---------------------------------- | ---------------- |
+| Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs |
+| NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs |
 
 Two walkthroughs fall outside the two rigs, and each says so at its top:
 RAPL needs an Intel CPU, and rocprof an AMD GPU. The jemalloc walkthrough

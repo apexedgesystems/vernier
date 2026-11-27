@@ -2,12 +2,13 @@
 #define VERNIER_PROFILERENV_HPP
 /**
  * @file ProfilerEnv.hpp
- * @brief Tiny shared utilities used by multiple profiler backends.
+ * @brief Shared utilities used by multiple profiler backends.
  *
  * These checks live here (rather than duplicated in each TU) so the
  * Docker / valgrind / binary-on-PATH detection logic stays consistent
- * across backends. All functions are header-only; resolveArtifactDir() is the
- * only one that touches the filesystem.
+ * across backends. All functions are header-only. Several read the
+ * filesystem (container marker files, /proc/1/cgroup, /proc/self/maps), one
+ * runs a shell command, and resolveArtifactDir() creates directories.
  */
 
 #include <cstdio>
@@ -99,9 +100,9 @@ inline bool isInContainer() {
 /**
  * @brief True when the process is being executed by valgrind.
  *
- * RUNNING_ON_VALGRIND is set by `valgrind --tool=*` for child processes;
- * the libvgpreload_* mapping is the secondary signal for cases where the
- * env var is filtered (e.g. systemd / nspawn).
+ * The signal is a vgpreload_* library in /proc/self/maps, which valgrind
+ * maps into every process it runs. A RUNNING_ON_VALGRIND environment variable
+ * is also taken as true; valgrind itself does not set one.
  */
 inline bool isRunningUnderValgrind() {
   if (std::getenv("RUNNING_ON_VALGRIND") != nullptr)
@@ -360,8 +361,10 @@ struct CuptiDecision {
  *     `bench run` started, or one typed by hand, recognised from the variables
  *     the tool exports to its target.
  *
- * VERNIER_DISABLE_CUPTI is read with parseEnvBool(), the grammar of every
- * boolean setting. True (1, true, yes or on, in any case) is the override;
+ * VERNIER_DISABLE_CUPTI is read with parseEnvBool(), the grammar of the
+ * profiler's boolean settings (the monitor's VERNIER_MONITOR and
+ * VERNIER_MONITOR_DISABLE have their own). True (1, true, yes or on, in any
+ * case) is the override;
  * false (0, false, no, off or empty, in any case) leaves the collector on and
  * never keeps it on inside a session; unset is no override. Any other value is
  * a configuration error: @ref CuptiDecision::error names it and

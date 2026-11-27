@@ -25,7 +25,9 @@
  *
  * Trade-offs vs sampling profilers:
  *  - Pro: Deterministic, zero noise, 1 repeat is sufficient, no DWARF issues
- *  - Con: 20-50x slower execution (instruction-level simulation)
+ *  - Con: much slower execution (instruction-level simulation), by a factor
+ *    that depends on the code: 51 and 94 times for the join example's two
+ *    versions on a Raspberry Pi 4 (walkthrough 07)
  *  - Best for: A/B optimization comparison, finding exact instruction hotspots
  *  - Not for: Real-time profiling, measuring wall-clock time
  *

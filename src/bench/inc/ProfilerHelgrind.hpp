@@ -12,8 +12,11 @@
  *
  * Complements memcheck (memory errors) and compute-sanitizer (GPU races):
  * run it alongside benchmarks of multithreaded code to catch concurrency
- * regressions introduced by an optimization pass. Slows execution heavily
- * (~20-100x), so use a low --cycles.
+ * regressions introduced by an optimization pass. Slows execution by orders of
+ * magnitude (hundreds of times for walkthrough 20's locked total on a
+ * Raspberry Pi 4 with valgrind's fair scheduler, which bench run asks for, and
+ * thousands of times, seven times apart between runs, without it), so use a
+ * low --cycles.
  *
  * Helgrind checks only when valgrind runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:

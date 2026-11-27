@@ -204,14 +204,37 @@ monitor accepted, `Dropped` counts what the ring buffer had no room for,
 and the `Calls` column adds up to the difference. When the console sink
 is off, the same table is still available through `monitor.summary()`.
 
-The file sink writes a tab-delimited record per sample, suitable for
-post-run analysis with awk / pandas / `bench` Python tools. A file it cannot
-open or write, and a file sink with an empty path, are reported on stderr; the
-program goes on. A write failure is reported once, then at `stop()` with an
-upper bound on what is missing: the records given after the last write it
-confirmed and before the failure. The C library may have written some of those
-before the write failed, so up to that many are missing from the file, not
-necessarily all of them.
+The file sink appends one tab-separated line per sample, with no header: the
+steady-clock timestamp in nanoseconds, the kind (`SCOPE`, `COUNTER` or
+`GAUGE`), the tag as `name/id`, the scope name, the duration in nanoseconds
+(0 for counters and gauges), and the value: a counter's delta, a gauge's
+reading, and 0 for a scope. A scope that took longer than its threshold has
+the threshold in microseconds as its value and a seventh field,
+`THRESHOLD_BREACH`. The file is not a benchmark CSV, so `bench summary`,
+`bench compare` and `bench-plot` do not read it; awk and pandas do:
+
+```bash
+# Calls, mean and longest duration of each timed scope
+awk -F'\t' '$2 == "SCOPE" { k = $3 " " $4; n[k]++; s[k] += $5; if ($5 > m[k]) m[k] = $5 }
+  END { for (k in n) printf "%-22s %6d calls  mean %.3f ms  max %.3f ms\n",
+                            k, n[k], s[k] / n[k] / 1e6, m[k] / 1e6 }' /tmp/run.vmon
+```
+
+```python
+import pandas as pd
+
+cols = ["timestamp_ns", "kind", "tag", "scope", "duration_ns", "value", "flag"]
+df = pd.read_csv("/tmp/run.vmon", sep="\t", header=None, names=cols)
+scopes = df[df.kind == "SCOPE"]
+print(scopes.groupby(["tag", "scope"]).duration_ns.describe(percentiles=[0.5, 0.99]))
+```
+
+A file it cannot open or write, and a file sink with an empty path, are
+reported on stderr; the program goes on. A write failure is reported once,
+then at `stop()` with an upper bound on what is missing: the records given
+after the last write it confirmed and before the failure. The C library may
+have written some of those before the write failed, so up to that many are
+missing from the file, not necessarily all of them.
 
 ## When to reach for monitor vs. bench
 
