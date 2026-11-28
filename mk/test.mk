@@ -37,6 +37,7 @@ TEST_MK_GUARD := 1
 # Test labels (must match CMake test properties)
 COVERAGE_LABEL  ?= Coverage
 TIMING_LABEL    ?= Timing
+UNIT_LABEL      ?= unit
 COMPONENT_LABEL ?= component
 RIG_LABEL       ?= rig
 
@@ -167,10 +168,8 @@ define _selection_slowest
 { printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; { $(if $(strip $(1)),$(_gtest_times) $(1);) $(if $(strip $(2)),$(_ctest_times) $(2);) } | sort -rn | head -n $(TEST_SLOWEST) || true; }
 endef
 
-# Space-separated gtest patterns as one filter field, and as its negative part
-# (empty when there are none).
-_gtest_join       = $(subst $(_space),:,$(strip $(1)))
-_gtest_exclusions = $(if $(strip $(1)),-$(call _gtest_join,$(1)))
+# Space-separated gtest patterns as one filter field.
+_gtest_join = $(subst $(_space),:,$(strip $(1)))
 
 # Fail, naming the variable, when a selection list is empty: a target would
 # otherwise run nothing from it and pass. Checked before anything is built.
@@ -178,29 +177,27 @@ _gtest_exclusions = $(if $(strip $(1)),-$(call _gtest_join,$(1)))
 _require_lists = $(foreach v,$(1),$(if $(strip $($(v))),,printf '%s is empty: the selection names nothing\n' '$(v)' >&2; exit 1;)) true
 
 # Run a GoogleTest program on a named selection, from inside its build tree.
-# Each pattern must select a test once the exclusions are applied, so a renamed
-# suite fails the run instead of leaving it; the program then runs once on the
-# whole selection. No pattern at all fails too: gtest runs no test for an empty
-# filter, and every test but the exclusions for exclusions alone. Each failure
-# exits explicitly, since errexit does not hold where a caller tests the run's
-# status (a teed run followed by ||). The program writes gtest's JSON report,
+# Each pattern must select a test, so a renamed suite fails the run instead of
+# leaving it; the program then runs once on the whole selection. No pattern at
+# all fails too: gtest runs no test for an empty filter. Each failure exits
+# explicitly, since errexit does not hold where a caller tests the run's status
+# (a teed run followed by ||). The program writes gtest's JSON report,
 # <program>.json, removed before the run: the parent's own, which no child's
-# output can fake. The lane's slowest-tests listing reads it, and with a fourth
+# output can fake. The lane's slowest-tests listing reads it, and with a third
 # argument, no-skips, a skipped test it records fails the run too.
-# Usage: $(call _gtest_selection,program,patterns[,exclusions[,no-skips]])
+# Usage: $(call _gtest_selection,program,patterns[,no-skips])
 define _gtest_selection
 $(if $(strip $(2)),,printf '%s: the selection names no pattern\n' '$(notdir $(1))' >&2; exit 1;) \
 for p in $(foreach p,$(2),'$(p)'); do \
-  listed=$$($(call with_lib_path,$(1)) --gtest_list_tests \
-    --gtest_filter="$$p$(call _gtest_exclusions,$(3))") || exit $$?; \
+  listed=$$($(call with_lib_path,$(1)) --gtest_list_tests --gtest_filter="$$p") || exit $$?; \
   if [ "$$(printf '%s\n' "$$listed" | grep -c '^  ' || true)" -eq 0 ]; then \
     printf '%s: %s selects no test\n' '$(notdir $(1))' "$$p" >&2; \
     exit 1; \
   fi; \
 done; \
 rm -f $(notdir $(1)).json; $(call with_lib_path,$(1)) \
-  --gtest_filter='$(call _gtest_join,$(2))$(call _gtest_exclusions,$(3))' \
-  --gtest_output=json:$(notdir $(1)).json || exit $$?$(if $(4),$(call _gtest_refuse_skips,$(notdir $(1))))
+  --gtest_filter='$(call _gtest_join,$(2))' \
+  --gtest_output=json:$(notdir $(1)).json || exit $$?$(if $(3),$(call _gtest_refuse_skips,$(notdir $(1))))
 endef
 
 # The end of a run that refuses skips, for the program named: its JSON report
@@ -209,14 +206,14 @@ _gtest_refuse_skips = ; [ -s $(1).json ] || { printf '%s: gtest wrote no JSON re
 
 # Run program=pattern[:pattern...] words (a program under bin/tests, or
 # dtests/<program> for one under bin/dtests), each through _gtest_selection
-# with the same exclusions and skip rule, from inside the build tree; each run
-# ends with a semicolon.
-# Usage: $(call _gtest_selections,words[,exclusions[,no-skips]])
+# with the same skip rule, from inside the build tree; each run ends with a
+# semicolon.
+# Usage: $(call _gtest_selections,words[,no-skips])
 _selection_name     = $(firstword $(subst =, ,$(1)))
 _selection_program  = bin/$(if $(findstring /,$(call _selection_name,$(1))),,tests/)$(call _selection_name,$(1))
 _selection_patterns = $(subst :, ,$(word 2,$(subst =, ,$(1))))
 _gtest_selections   = $(foreach t,$(1),$(call _gtest_selection,$(call \
-  _selection_program,$(t)),$(call _selection_patterns,$(t)),$(2),$(3));)
+  _selection_program,$(t)),$(call _selection_patterns,$(t)),$(2));)
 # The JSON reports those runs write, one a program
 _selection_reports  = $(foreach t,$(1),$(notdir $(call _selection_name,$(t))).json)
 
@@ -281,7 +278,8 @@ endef
 # Allocator-dependent unit tests, built with tcmalloc (VERNIER_LINK_TCMALLOC=ON):
 # gperf's lifecycle, reader, check and sampling cases (the captures of both
 # kinds at once included) and the tcmalloc opt-in cases, in the gtest selection
-# above. Builds only TestBench. Every pull request runs it (ci.yml's C++ job).
+# above. Builds TestBench, with the helper program its watchdog cases run.
+# Every pull request runs it (ci.yml's C++ job).
 test-heap:
 	@$(call _require_lists,HEAP_TEST_FILTERS)
 	$(_heap_configure)
@@ -355,7 +353,7 @@ cuda-check:
 	  -DVERNIER_BUILD_TOOLS=OFF -DVERNIER_USE_NVML=OFF -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
 	@cmake --build build/cuda-check-nonvml -j$(NUM_JOBS) --target $(CUDA_NODEVICE_TARGETS)
 	$(call log,cuda,Running the unit cases that need no device)
-	@cd build/cuda-check-nonvml && { $(call _gtest_selections,$(CUDA_NODEVICE_TESTS),,no-skips) }
+	@cd build/cuda-check-nonvml && { $(call _gtest_selections,$(CUDA_NODEVICE_TESTS),no-skips) }
 	@cd build/cuda-check-nonvml && $(call _selection_slowest,$(call _selection_reports,$(CUDA_NODEVICE_TESTS)))
 
 .PHONY: cuda-check
