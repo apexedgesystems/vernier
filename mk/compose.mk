@@ -59,14 +59,18 @@ compose-format-check:
 compose-static:
 	$(call _compose_run,static analysis,dev-cuda,static)
 
+# ------------------------------------------------------------------------------
+# Sanitizers (dev: their trees build without the GPU)
+# ------------------------------------------------------------------------------
+
 compose-asan:
-	$(call _compose_run,AddressSanitizer,dev-cuda,asan)
+	$(call _compose_run,AddressSanitizer,dev,asan)
 
 compose-tsan:
-	$(call _compose_run,ThreadSanitizer,dev-cuda,tsan)
+	$(call _compose_run,ThreadSanitizer,dev,tsan)
 
 compose-ubsan:
-	$(call _compose_run,UBSanitizer,dev-cuda,ubsan)
+	$(call _compose_run,UBSanitizer,dev,ubsan)
 
 # ------------------------------------------------------------------------------
 # Tools (dev-cuda)

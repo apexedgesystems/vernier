@@ -78,9 +78,13 @@ std::string csvNumber(double value) {
   return out.str();
 }
 
-/** @brief Work in proportion to @p n, kept from the optimizer by a volatile sink. */
+/**
+ * @brief Work in proportion to @p n, kept from the optimizer by a volatile
+ *        sink. Each thread has its own sink, so callers on several threads
+ *        at once (contentionRun's workers) write nothing they share.
+ */
 void spin(int n) {
-  static volatile std::uint64_t sink = 0;
+  thread_local volatile std::uint64_t sink = 0;
   for (int i = 0; i < n; ++i) {
     sink = sink + static_cast<std::uint64_t>(i);
   }

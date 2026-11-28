@@ -44,6 +44,25 @@ tools-py: prep
 	  printf '[tools] Building Python tools\n'; ninja vernier_py_tools; \
 	else printf '[tools] No Python tools to build\n'; fi
 
+# Check that a build made the CLI tools, naming each one missing: the debug
+# tree after make debug unless TOOLS_CHECK_DIR names another. It runs no
+# test; ci.yml's C++ job and make verify run it on every pull request, after
+# the debug build.
+TOOLS_CHECK_DIR   ?= $(HOST_DEBUG_DIR)
+TOOLS_CHECK_FILES ?= bin/tools/rust/bench bin/tools/py/bench-plot
+
+tools-check:
+	@$(call _require_lists,TOOLS_CHECK_FILES)
+	@missing=0; for f in $(TOOLS_CHECK_FILES); do \
+	  if [ ! -f "$(TOOLS_CHECK_DIR)/$$f" ]; then \
+	    printf 'tools-check: %s is missing\n' "$(TOOLS_CHECK_DIR)/$$f" >&2; missing=1; \
+	  fi; \
+	done; \
+	if [ "$$missing" -ne 0 ]; then exit 1; fi; \
+	printf '[tools] Every tool is built under %s\n' '$(TOOLS_CHECK_DIR)'
+
+.PHONY: tools-check
+
 # ------------------------------------------------------------------------------
 # Static Analysis
 # ------------------------------------------------------------------------------

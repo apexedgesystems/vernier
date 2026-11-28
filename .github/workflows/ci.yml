@@ -59,6 +59,7 @@ jobs:
       py: ${{ steps.d.outputs.py }}
       docker: ${{ steps.d.outputs.docker }}
       leaves: ${{ steps.d.outputs.leaves }}
+      cuda_image: ${{ steps.d.outputs.cuda_image }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -81,6 +82,7 @@ jobs:
           echo "Changed files ($RANGE):"; echo "$files"
 
           cpp=false; rust=false; py=false; docker=false; leaves=false; all=false
+          cuda_image=false
           for f in $files; do
             case "$f" in
               # Baked dependency manifests: the gate images bake these, so the
@@ -89,8 +91,10 @@ jobs:
               tools/py/poetry.lock|tools/py/pyproject.toml) py=true; docker=true ;;
               ExternalDependencies.cmake) cpp=true; docker=true ;;
               tools/CMakeLists.txt) cpp=true; rust=true; py=true ;;
-              tools/rust/*) rust=true ;;
-              tools/py/*)   py=true ;;
+              # The C++ job builds the tools through the debug preset and checks
+              # them (make tools-check).
+              tools/rust/*) rust=true; cpp=true ;;
+              tools/py/*)   py=true; cpp=true ;;
               src/*|CMakeLists.txt|cmake/*|CMakePresets.json) cpp=true ;;
               # Gate-image inputs (the images the jobs below run in)
               docker/base.Dockerfile|docker/dev/cpu.Dockerfile) docker=true ;;
@@ -100,6 +104,8 @@ jobs:
               # builder/* and final.Dockerfile are release-time (they embed a full
               # artifact build); the release pipeline proves them.
               docker/builder/*|docker/final.Dockerfile) : ;;
+              # The CUDA tier the CUDA job runs in is a leaf of its own.
+              docker/dev/cuda.Dockerfile) leaves=true; cuda_image=true ;;
               docker/dev/*|docker/toolchain/*) leaves=true ;;
               *) all=true ;;
             esac
@@ -113,6 +119,7 @@ jobs:
           if [ "$docker" = true ]; then leaves=true; fi
 
           printf '%s=%s\n' cpp "$cpp" rust "$rust" py "$py" docker "$docker" leaves "$leaves" | tee -a "$GITHUB_OUTPUT"
+          printf '%s=%s\n' cuda_image "$cuda_image" | tee -a "$GITHUB_OUTPUT"
 
   # ----------------------------------------------------------------------------
   # Format check -- clang-format, prettier, shfmt etc. via 'make format-check'
@@ -223,9 +230,7 @@ jobs:
         run: docker compose run --rm -T dev ccache -s
 
       - name: Verify tools built
-        run: |
-          test -f build/native-linux-debug/bin/tools/rust/bench
-          test -f build/native-linux-debug/bin/tools/py/bench-plot
+        run: docker compose run --rm -T dev make tools-check
 
       # The same setting: make testp builds through its debug prerequisite.
       # make testp runs the unit tests; the component tests run in the
@@ -234,12 +239,14 @@ jobs:
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 
       # A second tree with tcmalloc linked, as make verify's C++ lane builds
-      # it: the tests that depend on heap profiling run only there.
-      - name: Run heap-profiling tests
+      # it: the unit tests that depend on heap profiling run only there (their
+      # component cases run in the nightly workflow).
+      - name: Run heap-profiling unit tests
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make test-heap
 
   # ----------------------------------------------------------------------------
-  # Rust tests -- cargo test on the lean build tier (release parity)
+  # Rust tests and lint -- cargo test, then clippy, on the lean build tier
+  # (release parity)
   # ----------------------------------------------------------------------------
   rust:
     name: Rust tests
@@ -279,6 +286,11 @@ jobs:
 
       - name: Run Rust tests
         run: $COMPOSE run --rm -T ci-build make test-rust
+
+      # clippy over every target, every warning an error, in the cargo target
+      # folder the tests built in this checkout
+      - name: Lint Rust
+        run: $COMPOSE run --rm -T ci-build make lint-rust
 
   # ----------------------------------------------------------------------------
   # Python tests -- pytest on the lean build tier (release parity)
@@ -324,6 +336,120 @@ jobs:
       # own environment and never adopts a tools/py/.venv in the checkout.
       - name: Run Python tests
         run: $COMPOSE run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
+
+  # ----------------------------------------------------------------------------
+  # AddressSanitizer selection -- make asan beside the C++ job: the unit
+  # selection (the CPU unit programs' unit tests) in its own tree, failing on
+  # a test, an empty selection or any sanitizer report; its component cases
+  # run in the nightly workflow. Its own ccache key, as the trees differ in
+  # flags.
+  # ----------------------------------------------------------------------------
+  asan:
+    name: AddressSanitizer selection
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-asan-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-asan-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-
+            ccache-asan-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Rebuild dev image (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
+        run: |
+          $COMPOSE build base
+          $COMPOSE build dev
+
+      - name: AddressSanitizer selection
+        run: docker compose run --rm -T dev make asan
+
+  # ----------------------------------------------------------------------------
+  # CUDA compile and device-free tests -- make cuda-check on the lean CUDA tier,
+  # without a GPU: every CUDA target built and linked in the shipped
+  # configuration, then the unit cases that need no device in an NVML-off tree.
+  # The GPU programs' component and rig tests run under make test-rig on a GPU
+  # host, not here.
+  # ----------------------------------------------------------------------------
+  cuda:
+    name: CUDA compile and device-free tests
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.cuda_image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-cuda-${{ runner.os }}-${{ hashFiles('docker/dev/cuda.Dockerfile', 'docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cuda-${{ runner.os }}-${{ hashFiles('docker/dev/cuda.Dockerfile', 'docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-
+            ccache-cuda-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached CUDA build tier
+        run: |
+          docker pull $REGISTRY/vernier.build-base:latest \
+            && docker tag $REGISTRY/vernier.build-base:latest vernier.build-base || true
+          docker pull $REGISTRY/vernier.build.cuda:latest \
+            && docker tag $REGISTRY/vernier.build.cuda:latest vernier.build.cuda || true
+
+      - name: Rebuild CUDA build tier (image inputs changed)
+        if: needs.changes.outputs.docker == 'true' || needs.changes.outputs.cuda_image == 'true'
+        run: |
+          $COMPOSE build build-base
+          $COMPOSE build build-cuda
+
+      - name: CUDA compile and device-free tests
+        run: $COMPOSE run --rm -T ci-build-cuda make cuda-check
 
   # ----------------------------------------------------------------------------
   # Image graph check -- prove the platform leaves still build.

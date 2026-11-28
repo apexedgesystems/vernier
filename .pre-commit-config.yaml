@@ -155,6 +155,12 @@ repos:
         language: system
         files: \.(c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx|tpp)$
 
+      - id: rustfmt-local
+        name: rustfmt (local)
+        entry: rustfmt
+        language: system
+        files: \.rs$
+
       - id: cmake-format-local
         name: cmake-format (local)
         entry: cmake-format -i

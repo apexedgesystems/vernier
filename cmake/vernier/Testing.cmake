@@ -28,7 +28,7 @@ include_guard(GLOBAL)
 # through LABELS. The class labels are the helper's, not LABELS', and a
 # pattern that names no test of the program is an error. A coverage run, the
 # whole program, is component when any of its tests is. The lanes select by
-# these labels (mk/test.mk).
+# these labels (mk/test.mk, mk/sanitizers.mk).
 #
 # WORKER_SOURCES are compiled into the program as SOURCES are, but not read for
 # cases: a case defined in one is not registered. It is for a probe case that
